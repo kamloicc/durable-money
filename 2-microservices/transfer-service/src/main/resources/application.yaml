@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: transfer-service
+  mvc:
+    problemdetails:
+      enabled: true
+account:
+  service:
+    url: ${ACCOUNT_SERVICE_URL:http://localhost:9080}
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8081}
+server:
+  port: ${PORT:8080}
+logging:
+  structured:
+    format:
+      console: ecs
