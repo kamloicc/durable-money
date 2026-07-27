@@ -4,9 +4,7 @@ A hands-on tutorial comparing five approaches to building
 resilient money transfer systems — from a classic monolith
 to durable execution with Temporal. Designed for developers
 who want to understand *why* distributed transactions are
-hard and *how* Temporal solves the problem.
-
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![Build](https://github.com/alexandreroman/durable-money/actions/workflows/build.yml/badge.svg)](https://github.com/alexandreroman/durable-money/actions/workflows/build.yml)
+hard.
 
 ## Features
 
@@ -43,7 +41,6 @@ handle.
 | [`2-microservices`](2-microservices/README.md) | REST microservices       | Distributed calls without a safety net    |
 | [`3-two-phase-commit`](3-two-phase-commit/README.md) | 2PC + Postgres prepared tx | Hand-rolled 2-phase commit, no JTA |
 | [`4-messaging`](4-messaging/README.md)       | RabbitMQ + DLQ             | Async resilience, still no compensation   |
-| [`5-temporal`](5-temporal/README.md)         | Temporal + Saga            | Durable execution with auto-compensation  |
 
 ## Getting started
 
@@ -100,7 +97,6 @@ synchronous-atomic to asynchronous-durable:
 | 2-microservices    | 200 OK       | `{transferId, status, message}` — synchronous, may leave money lost on failure             |
 | 3-two-phase-commit | 200 OK       | full Transfer (atomic via 2PC) — synchronous, all-or-nothing across services               |
 | 4-messaging        | 202 Accepted | `{id, status, message, createdAt, updatedAt}` — async, poll `GET /transfers/{id}`          |
-| 5-temporal         | 202 Accepted | `{transferId}` — async via Temporal; observe in the UI or `GET /transfers/{workflowId}`    |
 
 ### Configuration env vars
 
@@ -117,7 +113,6 @@ relevant module's README.
 | `DB_PASS`             | PostgreSQL password                  | `demo`                  |
 | `ACCOUNT_SERVICE_URL` | Account service base URL (modules 2, 3, 5) | `http://localhost:9080` |
 | `RABBITMQ_HOST`       | RabbitMQ hostname (module 4)         | `localhost`             |
-| `TEMPORAL_ADDRESS`    | Temporal Server address (module 5)   | `localhost:7233`        |
 
 ### Building from source
 
@@ -155,14 +150,13 @@ operational caveats, ❌ money silently lost.
 | `2-microservices`    |  581 |  ❌  | Incomplete: money lost if credit fails   |
 | `3-two-phase-commit` | 1204 |  🟡  | Atomic + recovery loop; still synchronous and chatty |
 | `4-messaging`        | 1513 |  🟡  | Async + managed DLQ; no auto-compensation |
-| `5-temporal`         |  789 |  ✅  | Durable & resilient; no money lost       |
 
 ```mermaid
 xychart-beta horizontal
     title "Lines of code per module"
-    x-axis ["1-monolith", "2-microservices", "3-two-phase-commit", "4-messaging", "5-temporal"]
+    x-axis ["1-monolith", "2-microservices", "3-two-phase-commit", "4-messaging"]
     y-axis "LOC" 0 --> 1600
-    bar [481, 581, 1204, 1513, 789]
+    bar [481, 581, 1204, 1513]
 ```
 
 A few takeaways:
@@ -179,11 +173,6 @@ A few takeaways:
   add real lines. Async messaging avoids the 2PC
   coordinator, but the "parking lot" is operational code
   someone has to write and maintain.
-- Module 5 is durable and resilient by design *with* fewer
-  lines than module 4: Temporal persists workflow state,
-  retries activities, and drives Saga compensation — the
-  bookkeeping that DLQ-based recovery requires lives in
-  the SDK, not in application code.
 
 ## License
 
