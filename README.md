@@ -11,8 +11,8 @@ hard.
 - **Progressive complexity** — each module builds on the
   previous one, introducing a new failure mode and its
   solution.
-- **Same domain, five architectures** — money transfer is
-  implemented identically in all five modules so the
+- **Same domain, 4 architectures** — money transfer is
+  implemented identically in all 4 modules so the
   differences are easy to spot.
 - **Runnable with one command** — every module ships with
   a `compose.yaml` that starts all required services.
