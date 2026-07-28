@@ -24,9 +24,25 @@ jobs:
     outputs:
       package-matrix: ${{ steps.matrix.outputs.package-matrix }}
       container-matrix: ${{ steps.matrix.outputs.container-matrix }}
+      release-version: ${{ steps.version.outputs.release-version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.1.${GITHUB_RUN_NUMBER}"
+          fi
+
+          echo "release-version=$version" >> "$GITHUB_OUTPUT"
+          echo "Release version: $version"
 
       - name: Build matrices from Dockerfile and pom.xml folders
         id: matrix
@@ -46,27 +62,54 @@ jobs:
 
               path = directory.as_posix()
               service_id = re.sub(r'[^a-z0-9]+', '-', path.lower()).strip('-')
-              services.append({'id': service_id, 'path': path})
+              package_base = re.sub(r'^\d+-', '', service_id)
+
+              services.append(
+                  {
+                      'id': service_id,
+                      'path': path,
+                      'package_id': f'durable-money-{package_base}',
+                  }
+              )
 
           services.sort(key=lambda item: item['path'])
           if not services:
-              raise SystemExit('No folder containing both Dockerfile and pom.xml was found')
+              raise SystemExit(
+                  'No folder containing both Dockerfile and pom.xml was found'
+              )
 
           package_rows = []
           for service in services:
-              package_rows.append({**service, 'os': 'ubuntu-latest', 'platform': 'linux'})
-              package_rows.append({**service, 'os': 'windows-latest', 'platform': 'windows'})
+              package_rows.append(
+                  {**service, 'os': 'ubuntu-latest', 'platform': 'linux'}
+              )
+              package_rows.append(
+                  {**service, 'os': 'windows-latest', 'platform': 'windows'}
+              )
 
-          package_matrix = json.dumps({'include': package_rows}, separators=(',', ':'))
-          container_matrix = json.dumps({'include': services}, separators=(',', ':'))
+          package_matrix = json.dumps(
+              {'include': package_rows},
+              separators=(',', ':'),
+          )
+          container_matrix = json.dumps(
+              {'include': services},
+              separators=(',', ':'),
+          )
 
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+          with open(
+              os.environ['GITHUB_OUTPUT'],
+              'a',
+              encoding='utf-8',
+          ) as output:
               output.write(f'package-matrix={package_matrix}\n')
               output.write(f'container-matrix={container_matrix}\n')
 
           print('Runnable services:')
           for service in services:
-              print(f"- {service['id']}: {service['path']}")
+              print(
+                  f"- {service['id']}: {service['path']} "
+                  f"(package base: {service['package_id']})"
+              )
           PY
 
   package:
@@ -97,16 +140,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          jar="$(find '${{ matrix.path }}/target' -maxdepth 1 -type f -name '*.jar' ! -name 'original-*.jar' | head -n 1)"
+          jar="$(
+            find '${{ matrix.path }}/target' \
+              -maxdepth 1 \
+              -type f \
+              -name '*.jar' \
+              ! -name 'original-*.jar' |
+              head -n 1
+          )"
           test -n "$jar"
 
           app_name='durable-money-${{ matrix.id }}'
           input_dir='package-input/${{ matrix.id }}'
           jpackage_dir='dist/jpackage-${{ matrix.id }}'
           bundle='dist/${{ matrix.id }}-linux'
+          package_id='${{ matrix.package_id }}-linux'
+          version='${{ needs.discover.outputs.release-version }}'
+          package_file="dist/${package_id}.${version}.tar.gz"
 
           rm -rf "$input_dir" "$jpackage_dir" "$bundle"
           mkdir -p "$input_dir" "$jpackage_dir"
+
           cp "$jar" "$input_dir/app.jar"
 
           jpackage \
@@ -119,12 +173,17 @@ jobs:
             --java-options '-XX:+ExitOnOutOfMemoryError'
 
           mv "$jpackage_dir/$app_name" "$bundle"
-          tar -C dist -czf 'dist/${{ matrix.id }}-linux.tar.gz' '${{ matrix.id }}-linux'
+          tar -C "$bundle" -czf "$GITHUB_WORKSPACE/$package_file" .
+
+          echo "Created $package_file"
+          tar -tzf "$package_file" | head -n 30
 
       - name: Create self-contained Windows package
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $jar = Get-ChildItem '${{ matrix.path }}/target/*.jar' |
             Where-Object { $_.Name -notlike 'original-*.jar' } |
             Select-Object -First 1
@@ -137,9 +196,22 @@ jobs:
           $inputDir = 'package-input/${{ matrix.id }}'
           $jpackageDir = 'dist/jpackage-${{ matrix.id }}'
           $bundle = 'dist/${{ matrix.id }}-windows'
+          $packageId = '${{ matrix.package_id }}-windows'
+          $version = '${{ needs.discover.outputs.release-version }}'
+          $packageFile = "dist/$packageId.$version.zip"
 
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $inputDir, $jpackageDir, $bundle
-          New-Item -ItemType Directory -Force -Path $inputDir, $jpackageDir | Out-Null
+          Remove-Item `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue `
+            $inputDir, $jpackageDir, $bundle
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $inputDir, $jpackageDir |
+            Out-Null
+
           Copy-Item $jar.FullName "$inputDir/app.jar"
 
           jpackage `
@@ -152,15 +224,34 @@ jobs:
             --java-options '-XX:+ExitOnOutOfMemoryError'
 
           Move-Item "$jpackageDir/$appName" $bundle
-          Compress-Archive -Path $bundle -DestinationPath 'dist/${{ matrix.id }}-windows.zip' -Force
+
+          Compress-Archive `
+            -Path "$bundle/*" `
+            -DestinationPath $packageFile `
+            -Force
+
+          Write-Host "Created $packageFile"
 
       - name: Upload deployment package
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.id }}-${{ matrix.platform }}
-          path: dist/${{ matrix.id }}-${{ matrix.platform }}.*
+          name: ${{ matrix.id }}-${{ matrix.platform }}-${{ needs.discover.outputs.release-version }}
+          path: dist/${{ matrix.package_id }}-${{ matrix.platform }}.${{ needs.discover.outputs.release-version }}.*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Push monolith package to Octopus Deploy
+        if: >
+          github.event_name != 'pull_request' &&
+          matrix.id == '1-monolith'
+        uses: OctopusDeploy/push-package-action@v4
+        env:
+          OCTOPUS_URL: ${{ secrets.OCTOPUS_URL }}
+          OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+          OCTOPUS_SPACE: ${{ vars.OCTOPUS_SPACE }}
+        with:
+          packages: dist/${{ matrix.package_id }}-${{ matrix.platform }}.${{ needs.discover.outputs.release-version }}.*
+          overwrite_mode: FailIfExists
 
   container:
     name: Container ${{ matrix.id }}
@@ -193,6 +284,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/durable-money-${{ matrix.id }}
           tags: |
+            type=raw,value=${{ needs.discover.outputs.release-version }},enable=${{ github.event_name != 'pull_request' }}
             type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=sha-
