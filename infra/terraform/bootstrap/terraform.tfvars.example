@@ -1,0 +1,4 @@
+location                  = "westeurope"
+project_name              = "durable-money"
+state_resource_group_name = "rg-durable-money-tfstate-weu"
+state_container_name      = "tfstate"

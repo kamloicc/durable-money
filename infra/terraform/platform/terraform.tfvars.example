@@ -1,0 +1,13 @@
+project_name        = "durable-money"
+location            = "westeurope"
+resource_group_name = "rg-durable-money-platform-weu"
+admin_username      = "azureadmin"
+
+# Replace this with your current public IPv4 address followed by /32.
+admin_source_cidr = "203.0.113.10/32"
+
+# Cost-conscious lab defaults. Increase them if the applications need more capacity.
+linux_vm_size     = "Standard_B2ms"
+windows_vm_size   = "Standard_B2ms"
+aks_node_vm_size  = "Standard_D2s_v5"
+aks_node_count    = 2

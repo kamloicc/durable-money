@@ -14,14 +14,12 @@ HELP.md
 application-local.properties
 application-local.yml
 application-local.yaml
-
 # IntelliJ IDEA
 .idea/
 *.iml
 *.iws
 *.ipr
 out/
-
 # Eclipse
 .classpath
 .project
@@ -29,33 +27,48 @@ out/
 .springBeans
 .sts4-cache
 bin/
-
 # VS Code
 .vscode/
 .factorypath
-
 # NetBeans
 nbproject/private/
 nbbuild/
 nbdist/
 .nb-gradle/
 nb-configuration.xml
-
 # macOS
 .DS_Store
-
 # Logs
 *.log
 logs/
-
 # Local environment
 .env
 .env.local
-
 # Claude Code
 .claude/agent-memory/
 .claude/worktrees/
 .worktrees/
-
 # Excluded module
 5-temporal/
+# Terraform generated files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# Local Terraform configuration and secrets
+**/terraform.tfvars
+**/backend.hcl
+*.auto.tfvars
+*.auto.tfvars.json
+# Terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Local shell environment
+.env.*
+*.tf.backup
+# Terraform local and sensitive files
+tfplan*
