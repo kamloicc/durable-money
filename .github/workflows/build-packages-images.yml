@@ -1,0 +1,211 @@
+name: Build packages and container images
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  discover:
+    name: Discover runnable services
+    runs-on: ubuntu-latest
+    outputs:
+      package-matrix: ${{ steps.matrix.outputs.package-matrix }}
+      container-matrix: ${{ steps.matrix.outputs.container-matrix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build matrices from Dockerfile and pom.xml folders
+        id: matrix
+        shell: bash
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+
+          services = []
+          for dockerfile in pathlib.Path('.').rglob('Dockerfile'):
+              directory = dockerfile.parent
+              if not (directory / 'pom.xml').is_file():
+                  continue
+
+              path = directory.as_posix()
+              service_id = re.sub(r'[^a-z0-9]+', '-', path.lower()).strip('-')
+              services.append({'id': service_id, 'path': path})
+
+          services.sort(key=lambda item: item['path'])
+          if not services:
+              raise SystemExit('No folder containing both Dockerfile and pom.xml was found')
+
+          package_rows = []
+          for service in services:
+              package_rows.append({**service, 'os': 'ubuntu-latest', 'platform': 'linux'})
+              package_rows.append({**service, 'os': 'windows-latest', 'platform': 'windows'})
+
+          package_matrix = json.dumps({'include': package_rows}, separators=(',', ':'))
+          container_matrix = json.dumps({'include': services}, separators=(',', ':'))
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'package-matrix={package_matrix}\n')
+              output.write(f'container-matrix={container_matrix}\n')
+
+          print('Runnable services:')
+          for service in services:
+              print(f"- {service['id']}: {service['path']}")
+          PY
+
+  package:
+    name: Package ${{ matrix.id }} for ${{ matrix.platform }}
+    needs: discover
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.package-matrix) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+
+      - name: Build and test with Maven
+        run: mvn -B -ntp -f "${{ matrix.path }}/pom.xml" clean verify
+
+      - name: Create self-contained Linux package
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jar="$(find '${{ matrix.path }}/target' -maxdepth 1 -type f -name '*.jar' ! -name 'original-*.jar' | head -n 1)"
+          test -n "$jar"
+
+          app_name='durable-money-${{ matrix.id }}'
+          input_dir='package-input/${{ matrix.id }}'
+          jpackage_dir='dist/jpackage-${{ matrix.id }}'
+          bundle='dist/${{ matrix.id }}-linux'
+
+          rm -rf "$input_dir" "$jpackage_dir" "$bundle"
+          mkdir -p "$input_dir" "$jpackage_dir"
+          cp "$jar" "$input_dir/app.jar"
+
+          jpackage \
+            --type app-image \
+            --input "$input_dir" \
+            --main-jar app.jar \
+            --name "$app_name" \
+            --dest "$jpackage_dir" \
+            --java-options '-XX:MaxRAMPercentage=75' \
+            --java-options '-XX:+ExitOnOutOfMemoryError'
+
+          mv "$jpackage_dir/$app_name" "$bundle"
+          tar -C dist -czf 'dist/${{ matrix.id }}-linux.tar.gz' '${{ matrix.id }}-linux'
+
+      - name: Create self-contained Windows package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $jar = Get-ChildItem '${{ matrix.path }}/target/*.jar' |
+            Where-Object { $_.Name -notlike 'original-*.jar' } |
+            Select-Object -First 1
+
+          if (-not $jar) {
+            throw 'No executable Spring Boot JAR was found'
+          }
+
+          $appName = 'durable-money-${{ matrix.id }}'
+          $inputDir = 'package-input/${{ matrix.id }}'
+          $jpackageDir = 'dist/jpackage-${{ matrix.id }}'
+          $bundle = 'dist/${{ matrix.id }}-windows'
+
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $inputDir, $jpackageDir, $bundle
+          New-Item -ItemType Directory -Force -Path $inputDir, $jpackageDir | Out-Null
+          Copy-Item $jar.FullName "$inputDir/app.jar"
+
+          jpackage `
+            --type app-image `
+            --input $inputDir `
+            --main-jar app.jar `
+            --name $appName `
+            --dest $jpackageDir `
+            --java-options '-XX:MaxRAMPercentage=75' `
+            --java-options '-XX:+ExitOnOutOfMemoryError'
+
+          Move-Item "$jpackageDir/$appName" $bundle
+          Compress-Archive -Path $bundle -DestinationPath 'dist/${{ matrix.id }}-windows.zip' -Force
+
+      - name: Upload deployment package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}-${{ matrix.platform }}
+          path: dist/${{ matrix.id }}-${{ matrix.platform }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  container:
+    name: Container ${{ matrix.id }}
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.container-matrix) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image tags and labels
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/durable-money-${{ matrix.id }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and publish container image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.path }}
+          file: ${{ matrix.path }}/Dockerfile
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.id }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.id }}
