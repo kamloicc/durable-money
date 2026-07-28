@@ -174,6 +174,10 @@ A few takeaways:
   coordinator, but the "parking lot" is operational code
   someone has to write and maintain.
 
+## Infrastructure
+
+The [`infra`](infra) directory provisions the Azure deployment targets used by Octopus Deploy Cloud: one Ubuntu VM, one Windows VM, and one AKS cluster with Development, Staging, and Production namespaces. See [`infra/README.md`](infra/README.md) for setup, access, cost-control, and teardown instructions.
+
 ## License
 
 This project is licensed under the Apache-2.0 License —
