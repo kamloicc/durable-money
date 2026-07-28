@@ -176,7 +176,10 @@ jobs:
           tar -C "$bundle" -czf "$GITHUB_WORKSPACE/$package_file" .
 
           echo "Created $package_file"
-          tar -tzf "$package_file" | head -n 30
+
+          contents_file="$RUNNER_TEMP/package-contents.txt"
+          tar -tzf "$package_file" > "$contents_file"
+          head -n 30 "$contents_file"
 
       - name: Create self-contained Windows package
         if: matrix.platform == 'windows'
@@ -251,7 +254,7 @@ jobs:
           OCTOPUS_SPACE: ${{ vars.OCTOPUS_SPACE }}
         with:
           packages: dist/${{ matrix.package_id }}-${{ matrix.platform }}.${{ needs.discover.outputs.release-version }}.*
-          overwrite_mode: FailIfExists
+          overwrite_mode: IgnoreIfExists
 
   container:
     name: Container ${{ matrix.id }}
