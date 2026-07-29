@@ -228,12 +228,39 @@ jobs:
 
           Move-Item "$jpackageDir/$appName" $bundle
 
+          $serviceToolsDir = Join-Path $bundle 'service'
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $serviceToolsDir |
+            Out-Null
+
+          $winSwVersion = '2.12.0'
+          $winSwUrl = "https://github.com/winsw/winsw/releases/download/v$winSwVersion/WinSW-x64.exe"
+          $winSwLicenseUrl = "https://raw.githubusercontent.com/winsw/winsw/v$winSwVersion/LICENSE.txt"
+
+          $ProgressPreference = 'SilentlyContinue'
+
+          Invoke-WebRequest `
+            -Uri $winSwUrl `
+            -OutFile (Join-Path $serviceToolsDir 'winsw.exe')
+
+          Invoke-WebRequest `
+            -Uri $winSwLicenseUrl `
+            -OutFile (Join-Path $serviceToolsDir 'WinSW-LICENSE.txt')
+
+          $winSwFile = Get-Item (Join-Path $serviceToolsDir 'winsw.exe')
+          if ($winSwFile.Length -lt 100000) {
+            throw "The downloaded WinSW executable is unexpectedly small: $($winSwFile.Length) bytes"
+          }
+
           Compress-Archive `
             -Path "$bundle/*" `
             -DestinationPath $packageFile `
             -Force
 
           Write-Host "Created $packageFile"
+          Write-Host "Bundled WinSW $winSwVersion for Windows service installation"
 
       - name: Upload deployment package
         uses: actions/upload-artifact@v4
