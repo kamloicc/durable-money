@@ -1,12 +1,13 @@
-name: Release packages and deploy Development
+name: Release Beta or Hotfix channel
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*-beta.*'
+      - 'v*-hotfix.*'
 
 concurrency:
-  group: release-main
+  group: release-channel-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -21,6 +22,7 @@ jobs:
       package-matrix: ${{ steps.matrix.outputs.package-matrix }}
       container-matrix: ${{ steps.matrix.outputs.container-matrix }}
       release-version: ${{ steps.version.outputs.release-version }}
+      release-channel: ${{ steps.version.outputs.release-channel }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -31,15 +33,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "This release workflow must run from the main branch."
+          if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "This workflow must run from a version tag beginning with v."
             exit 1
           fi
 
-          version="0.2.${GITHUB_RUN_NUMBER}"
+          version="${GITHUB_REF_NAME#v}"
+
+          case "$version" in
+            *-beta.*)
+              channel="Beta"
+              ;;
+            *-hotfix.*)
+              channel="Hotfix"
+              ;;
+            *)
+              echo "Unsupported tag version: $version"
+              echo "Expected v<semver>-beta.<n> or v<semver>-hotfix.<n>."
+              exit 1
+              ;;
+          esac
 
           echo "release-version=$version" >> "$GITHUB_OUTPUT"
+          echo "release-channel=$channel" >> "$GITHUB_OUTPUT"
           echo "Release version: $version"
+          echo "Octopus channel: $channel"
 
       - name: Build matrices from Dockerfile and pom.xml folders
         id: matrix
@@ -309,9 +327,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/durable-money-${{ matrix.id }}
           tags: |
             type=raw,value=${{ needs.discover.outputs.release-version }}
-            type=ref,event=branch
             type=sha,prefix=sha-
-            type=raw,value=latest
 
       - name: Build and publish container image
         uses: docker/build-push-action@v6
@@ -326,8 +342,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.id }}
 
   release:
-    name: Release monolith to Octopus Development
-    if: github.ref == 'refs/heads/main'
+    name: Release monolith to Octopus Development through ${{ needs.discover.outputs.release-channel }}
+    if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - discover
       - package
@@ -342,6 +358,7 @@ jobs:
       OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
       OCTOPUS_SPACE: ${{ vars.OCTOPUS_SPACE }}
       RELEASE_VERSION: ${{ needs.discover.outputs.release-version }}
+      OCTOPUS_CHANNEL: ${{ needs.discover.outputs.release-channel }}
       OCTOPUS_PROJECT: Durable Money - Monolith
 
     steps:
@@ -358,7 +375,7 @@ jobs:
             durable-money-monolith-windows
             ${{ github.repository_owner }}/durable-money-1-monolith
           version: ${{ env.RELEASE_VERSION }}
-          branch: ${{ github.ref_name }}
+          branch: ${{ github.event.repository.default_branch }}
           overwrite_mode: IgnoreIfExists
 
       - name: Create monolith release in Octopus Deploy
@@ -367,20 +384,12 @@ jobs:
         with:
           project: ${{ env.OCTOPUS_PROJECT }}
           release_number: ${{ env.RELEASE_VERSION }}
-          channel: Stable
+          channel: ${{ env.OCTOPUS_CHANNEL }}
           packages: |
             durable-money-monolith-linux:${{ env.RELEASE_VERSION }}
             durable-money-monolith-windows:${{ env.RELEASE_VERSION }}
             ${{ github.repository_owner }}/durable-money-1-monolith:${{ env.RELEASE_VERSION }}
           ignore_existing: true
-          release_notes: |
-            Automated release created by GitHub Actions.
-
-            - Repository: `${{ github.repository }}`
-            - Branch: `${{ github.ref_name }}`
-            - Commit: `${{ github.sha }}`
-            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
       - name: Deploy monolith release to Development
         id: deploy_development
         uses: OctopusDeploy/deploy-release-action@v4
@@ -408,6 +417,7 @@ jobs:
             echo
             echo "- Project: ${OCTOPUS_PROJECT}"
             echo "- Release: ${RELEASE_VERSION}"
+            echo "- Channel: ${OCTOPUS_CHANNEL}"
             echo "- Environment: Development"
             echo "- Linux package: durable-money-monolith-linux ${RELEASE_VERSION}"
             echo "- Windows package: durable-money-monolith-windows ${RELEASE_VERSION}"
