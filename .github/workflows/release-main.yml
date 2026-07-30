@@ -1,17 +1,13 @@
-name: Build packages and container images
+name: Release packages and deploy Development
 
 on:
-  pull_request:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
-  workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-main
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -35,11 +31,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          else
-            version="0.1.${GITHUB_RUN_NUMBER}"
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "This release workflow must run from the main branch."
+            exit 1
           fi
+
+          version="0.2.${GITHUB_RUN_NUMBER}"
 
           echo "release-version=$version" >> "$GITHUB_OUTPUT"
           echo "Release version: $version"
@@ -271,9 +268,7 @@ jobs:
           retention-days: 14
 
       - name: Push monolith package to Octopus Deploy
-        if: >
-          github.event_name != 'pull_request' &&
-          matrix.id == '1-monolith'
+        if: matrix.id == '1-monolith'
         uses: OctopusDeploy/push-package-action@v4
         env:
           OCTOPUS_URL: ${{ secrets.OCTOPUS_URL }}
@@ -301,7 +296,6 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -314,19 +308,18 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/durable-money-${{ matrix.id }}
           tags: |
-            type=raw,value=${{ needs.discover.outputs.release-version }},enable=${{ github.event_name != 'pull_request' }}
+            type=raw,value=${{ needs.discover.outputs.release-version }}
             type=ref,event=branch
-            type=ref,event=tag
             type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest
 
       - name: Build and publish container image
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.path }}
           file: ${{ matrix.path }}/Dockerfile
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64,linux/arm64
+          push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.id }}
@@ -334,7 +327,7 @@ jobs:
 
   release:
     name: Release monolith to Octopus Development
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     needs:
       - discover
       - package
@@ -379,6 +372,13 @@ jobs:
             durable-money-monolith-windows:${{ env.RELEASE_VERSION }}
             ${{ github.repository_owner }}/durable-money-1-monolith:${{ env.RELEASE_VERSION }}
           ignore_existing: true
+          release_notes: |
+            Automated release created by GitHub Actions.
+
+            - Repository: `${{ github.repository }}`
+            - Branch: `${{ github.ref_name }}`
+            - Commit: `${{ github.sha }}`
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Deploy monolith release to Development
         id: deploy_development
