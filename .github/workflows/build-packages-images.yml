@@ -379,13 +379,6 @@ jobs:
             durable-money-monolith-windows:${{ env.RELEASE_VERSION }}
             ${{ github.repository_owner }}/durable-money-1-monolith:${{ env.RELEASE_VERSION }}
           ignore_existing: true
-          release_notes: |
-            Automated release created by GitHub Actions.
-
-            - Repository: `${{ github.repository }}`
-            - Branch: `${{ github.ref_name }}`
-            - Commit: `${{ github.sha }}`
-            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Deploy monolith release to Development
         id: deploy_development
