@@ -331,3 +331,92 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.id }}
           cache-to: type=gha,mode=max,scope=${{ matrix.id }}
+
+  release:
+    name: Release monolith to Octopus Development
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - discover
+      - package
+      - container
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      OCTOPUS_URL: ${{ secrets.OCTOPUS_URL }}
+      OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+      OCTOPUS_SPACE: ${{ vars.OCTOPUS_SPACE }}
+      RELEASE_VERSION: ${{ needs.discover.outputs.release-version }}
+      OCTOPUS_PROJECT: Durable Money - Monolith
+
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push monolith build information to Octopus Deploy
+        uses: OctopusDeploy/push-build-information-action@v4
+        with:
+          packages: |
+            durable-money-monolith-linux
+            durable-money-monolith-windows
+            ${{ github.repository_owner }}/durable-money-1-monolith
+          version: ${{ env.RELEASE_VERSION }}
+          branch: ${{ github.ref_name }}
+          overwrite_mode: IgnoreIfExists
+
+      - name: Create monolith release in Octopus Deploy
+        id: create_release
+        uses: OctopusDeploy/create-release-action@v4
+        with:
+          project: ${{ env.OCTOPUS_PROJECT }}
+          release_number: ${{ env.RELEASE_VERSION }}
+          packages: |
+            durable-money-monolith-linux:${{ env.RELEASE_VERSION }}
+            durable-money-monolith-windows:${{ env.RELEASE_VERSION }}
+            ${{ github.repository_owner }}/durable-money-1-monolith:${{ env.RELEASE_VERSION }}
+          ignore_existing: true
+          release_notes: |
+            Automated release created by GitHub Actions.
+
+            - Repository: `${{ github.repository }}`
+            - Branch: `${{ github.ref_name }}`
+            - Commit: `${{ github.sha }}`
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Deploy monolith release to Development
+        id: deploy_development
+        uses: OctopusDeploy/deploy-release-action@v4
+        with:
+          project: ${{ env.OCTOPUS_PROJECT }}
+          release_number: ${{ env.RELEASE_VERSION }}
+          environments: |
+            Development
+          use_guided_failure: false
+
+      - name: Wait for Development deployment
+        uses: OctopusDeploy/await-task-action@v4
+        with:
+          server_task_id: ${{ fromJSON(steps.deploy_development.outputs.server_tasks)[0].serverTaskId }}
+          polling_interval: 10
+          timeout_after: 1800
+          hide_progress: false
+
+      - name: Write Octopus deployment summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Octopus Development deployment"
+            echo
+            echo "- Project: ${OCTOPUS_PROJECT}"
+            echo "- Release: ${RELEASE_VERSION}"
+            echo "- Environment: Development"
+            echo "- Linux package: durable-money-monolith-linux ${RELEASE_VERSION}"
+            echo "- Windows package: durable-money-monolith-windows ${RELEASE_VERSION}"
+            echo "- Container image: ghcr.io/${GITHUB_REPOSITORY_OWNER}/durable-money-1-monolith:${RELEASE_VERSION}"
+            echo "- Result: successful"
+          } >> "$GITHUB_STEP_SUMMARY"
