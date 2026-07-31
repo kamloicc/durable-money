@@ -8,10 +8,46 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-SERVICE_NAME="#{Project.Linux.ServiceName}"
-APP_PORT="#{Project.Application.Port}"
-INSTALL_DIR="$(pwd -P)"
+get_required_octopus_variable() {
+  local name="$1"
+  local value
 
+  value="$(get_octopusvariable "$name")"
+
+  if [[ -z "$value" ]]; then
+    echo "Required Octopus variable '$name' is empty or missing."
+    exit 1
+  fi
+
+  printf '%s' "$value"
+}
+
+write_environment_value() {
+  local key="$1"
+  local value="$2"
+
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "Environment value '$key' contains a newline, which is not supported."
+    exit 1
+  fi
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+
+  printf '%s="%s"\n' "$key" "$value"
+}
+
+SERVICE_NAME="$(get_required_octopus_variable "Project.Linux.ServiceName")"
+APP_PORT="$(get_required_octopus_variable "Project.Application.Port")"
+MANAGEMENT_PORT="$(get_required_octopus_variable "Project.Management.Port")"
+JDBC_URL="$(get_required_octopus_variable "Project.Database.JdbcUrl")"
+DB_USERNAME="$(get_required_octopus_variable "Project.Database.Username")"
+DB_PASSWORD="$(get_required_octopus_variable "Project.Database.Password")"
+POOL_MAXIMUM_SIZE="$(get_required_octopus_variable "Project.Database.Pool.MaximumSize")"
+POOL_MINIMUM_IDLE="$(get_required_octopus_variable "Project.Database.Pool.MinimumIdle")"
+ENVIRONMENT_CODE="$(get_required_octopus_variable "Library.DurableMoney.Environment.Code")"
+
+INSTALL_DIR="$(pwd -P)"
 EXECUTABLE="${INSTALL_DIR}/bin/durable-money-1-monolith"
 ENVIRONMENT_DIRECTORY="/etc/durable-money"
 ENVIRONMENT_FILE="${ENVIRONMENT_DIRECTORY}/${SERVICE_NAME}.env"
@@ -31,24 +67,27 @@ if [[ ! -f "${EXECUTABLE}" ]]; then
 fi
 
 chmod 0755 "${EXECUTABLE}"
-
 install -d -m 0700 "${ENVIRONMENT_DIRECTORY}"
 
-cat > "${ENVIRONMENT_FILE}" <<'ENVIRONMENT'
-PORT="#{Project.Application.Port}"
-MANAGEMENT_PORT="#{Project.Management.Port}"
-SPRING_DATASOURCE_URL="#{Project.Database.JdbcUrl}"
-DB_USER="#{Project.Database.Username}"
-DB_PASS="#{Project.Database.Password}"
-SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE="#{Project.Database.Pool.MaximumSize}"
-SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE="#{Project.Database.Pool.MinimumIdle}"
-ENVIRONMENT
+{
+  write_environment_value "PORT" "${APP_PORT}"
+  write_environment_value "MANAGEMENT_PORT" "${MANAGEMENT_PORT}"
+  write_environment_value "SPRING_DATASOURCE_URL" "${JDBC_URL}"
+  write_environment_value "DB_USER" "${DB_USERNAME}"
+  write_environment_value "DB_PASS" "${DB_PASSWORD}"
+  write_environment_value \
+    "SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE" \
+    "${POOL_MAXIMUM_SIZE}"
+  write_environment_value \
+    "SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE" \
+    "${POOL_MINIMUM_IDLE}"
+} > "${ENVIRONMENT_FILE}"
 
 chmod 0600 "${ENVIRONMENT_FILE}"
 
 cat > "${UNIT_FILE}" <<UNIT
 [Unit]
-Description=Durable Money Monolith (#{Library.DurableMoney.Environment.Code})
+Description=Durable Money Monolith (${ENVIRONMENT_CODE})
 After=network-online.target
 Wants=network-online.target
 
