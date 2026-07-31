@@ -4,6 +4,7 @@ step "approve-production-deployment" {
     action {
         action_type = "Octopus.Manual"
         environments = ["production"]
+        notes = "Demo change created through the Octopus Config as Code UI."
         properties = {
             Octopus.Action.Manual.BlockConcurrentDeployments = "False"
             Octopus.Action.Manual.Instructions = <<-EOT
@@ -30,6 +31,7 @@ step "approve-production-deployment" {
                 Enter an approval or rejection reason in the Notes field.
                 EOT
             Octopus.Action.Manual.ResponsibleTeamIds = "durable-money-release-managers"
+            Octopus.Action.RunOnServer = "false"
         }
     }
 }
@@ -49,6 +51,7 @@ step "deploy-monolith-to-linux" {
             Octopus.Action.Package.DownloadOnTentacle = "False"
             Octopus.Action.Package.FeedId = "octopus-server-built-in"
             Octopus.Action.Package.PackageId = "durable-money-monolith-linux"
+            Octopus.Action.RunOnServer = "false"
         }
         worker_pool_variable = ""
 
@@ -78,6 +81,7 @@ step "deploy-monolith-to-windows" {
             Octopus.Action.Package.DownloadOnTentacle = "False"
             Octopus.Action.Package.FeedId = "octopus-server-built-in"
             Octopus.Action.Package.PackageId = "durable-money-monolith-windows"
+            Octopus.Action.RunOnServer = "false"
         }
         worker_pool_variable = ""
 
