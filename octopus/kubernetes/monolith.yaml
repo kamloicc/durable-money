@@ -19,6 +19,9 @@ metadata:
   labels:
     app.kubernetes.io/name: durable-money-monolith
     app.kubernetes.io/managed-by: octopus-deploy
+  annotations:
+    durable-money.demo/source: "github"
+    durable-money.demo/release: "#{Octopus.Release.Number}"
 spec:
   replicas: 1
   strategy:
