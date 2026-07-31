@@ -170,6 +170,15 @@ jobs:
             --java-options '-XX:+ExitOnOutOfMemoryError'
 
           mv "$jpackage_dir/$app_name" "$bundle"
+
+          if [[ '${{ matrix.id }}' == '1-monolith' ]]; then
+            install \
+              -m 0755 \
+              octopus/package/linux/Deploy.sh \
+              "$bundle/Deploy.sh"
+
+            test -x "$bundle/Deploy.sh"
+          fi
           tar -C "$bundle" -czf "$GITHUB_WORKSPACE/$package_file" .
 
           echo "Created $package_file"
@@ -224,6 +233,23 @@ jobs:
             --java-options '-XX:+ExitOnOutOfMemoryError'
 
           Move-Item "$jpackageDir/$appName" $bundle
+
+          if ('${{ matrix.id }}' -eq '1-monolith') {
+            Copy-Item `
+              -LiteralPath 'octopus/package/windows/Deploy.ps1' `
+              -Destination (Join-Path $bundle 'Deploy.ps1') `
+              -Force
+
+            $deployScript = Join-Path $bundle 'Deploy.ps1'
+
+            if (-not (
+              Test-Path `
+                -LiteralPath $deployScript `
+                -PathType Leaf
+            )) {
+              throw "The Windows Deploy.ps1 package script is missing."
+            }
+          }
 
           $serviceToolsDir = Join-Path $bundle 'service'
           New-Item `
