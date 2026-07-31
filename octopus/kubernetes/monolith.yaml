@@ -22,6 +22,7 @@ metadata:
   annotations:
     durable-money.demo/source: "github"
     durable-money.demo/release: "#{Octopus.Release.Number}"
+    durable-money.demo/manifest: "octopus/kubernetes/monolith.yaml"
 spec:
   replicas: 1
   strategy:

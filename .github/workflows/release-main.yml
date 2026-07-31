@@ -395,7 +395,7 @@ jobs:
           release_number: ${{ env.RELEASE_VERSION }}
           channel: Stable
           git_resources: |
-            Deploy monolith to AKS:${{ github.ref }}
+            Deploy monolith to AKS:refs/heads/main
           packages: |
             durable-money-monolith-linux:${{ env.RELEASE_VERSION }}
             durable-money-monolith-windows:${{ env.RELEASE_VERSION }}
