@@ -411,6 +411,8 @@ jobs:
           project: ${{ env.OCTOPUS_PROJECT }}
           release_number: ${{ env.RELEASE_VERSION }}
           channel: ${{ env.OCTOPUS_CHANNEL }}
+          git_resources: |
+            Deploy monolith to AKS:${{ github.ref }}
           packages: |
             durable-money-monolith-linux:${{ env.RELEASE_VERSION }}
             durable-money-monolith-windows:${{ env.RELEASE_VERSION }}
