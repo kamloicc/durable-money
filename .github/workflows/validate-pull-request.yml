@@ -14,15 +14,20 @@ permissions:
 
 jobs:
   discover:
-    name: Discover runnable services
+    name: Discover changed services
     runs-on: ubuntu-latest
+
     outputs:
       package-matrix: ${{ steps.matrix.outputs.package-matrix }}
       container-matrix: ${{ steps.matrix.outputs.container-matrix }}
       release-version: ${{ steps.version.outputs.release-version }}
+      has-services: ${{ steps.matrix.outputs.has-services }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Determine release version
         id: version
@@ -35,81 +40,209 @@ jobs:
           echo "release-version=$version" >> "$GITHUB_OUTPUT"
           echo "Release version: $version"
 
-      - name: Build matrices from Dockerfile and pom.xml folders
+      - name: Build matrices from changed service folders
         id: matrix
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
+          set -euo pipefail
+
           python <<'PY'
           import json
           import os
           import pathlib
           import re
+          import subprocess
+
+          base_sha = os.environ["BASE_SHA"]
+          head_sha = os.environ["HEAD_SHA"]
+
+          changed_files = set(
+              subprocess.check_output(
+                  [
+                      "git",
+                      "diff",
+                      "--name-only",
+                      "--diff-filter=ACMRD",
+                      base_sha,
+                      head_sha,
+                  ],
+                  text=True,
+              ).splitlines()
+          )
 
           services = []
-          for dockerfile in pathlib.Path('.').rglob('Dockerfile'):
+
+          for dockerfile in pathlib.Path(".").rglob("Dockerfile"):
               directory = dockerfile.parent
-              if not (directory / 'pom.xml').is_file():
+
+              if not (directory / "pom.xml").is_file():
                   continue
 
               path = directory.as_posix()
-              service_id = re.sub(r'[^a-z0-9]+', '-', path.lower()).strip('-')
-              package_base = re.sub(r'^\d+-', '', service_id)
+
+              service_id = re.sub(
+                  r"[^a-z0-9]+",
+                  "-",
+                  path.lower(),
+              ).strip("-")
+
+              package_base = re.sub(
+                  r"^\d+-",
+                  "",
+                  service_id,
+              )
 
               services.append(
                   {
-                      'id': service_id,
-                      'path': path,
-                      'package_id': f'durable-money-{package_base}',
+                      "id": service_id,
+                      "path": path,
+                      "package_id": f"durable-money-{package_base}",
                   }
               )
 
-          services.sort(key=lambda item: item['path'])
+          services.sort(key=lambda item: item["path"])
+
           if not services:
               raise SystemExit(
-                  'No folder containing both Dockerfile and pom.xml was found'
+                  "No folder containing both Dockerfile and pom.xml was found"
               )
 
-          package_rows = []
+          shared_files = {
+              "pom.xml",
+              "mvnw",
+              "mvnw.cmd",
+              ".github/workflows/validate-pull-request.yml",
+          }
+
+          build_all = any(
+              file_name in shared_files
+              or file_name.startswith(".mvn/")
+              for file_name in changed_files
+          )
+
+          monolith_dependency_files = {
+              "octopus/kubernetes/monolith.yaml",
+              "octopus/package/linux/Deploy.sh",
+              "octopus/package/windows/Deploy.ps1",
+              ".github/workflows/release-main.yml",
+              ".github/workflows/release-channel-tags.yml",
+          }
+
+          build_monolith = any(
+              file_name in monolith_dependency_files
+              for file_name in changed_files
+          )
+
+          selected_services = []
+
           for service in services:
-              package_rows.append(
-                  {**service, 'os': 'ubuntu-latest', 'platform': 'linux'}
+              service_path = service["path"]
+
+              service_changed = any(
+                  file_name == service_path
+                  or file_name.startswith(f"{service_path}/")
+                  for file_name in changed_files
               )
+
+              monolith_dependency_changed = (
+                  build_monolith
+                  and service["id"] == "1-monolith"
+              )
+
+              if (
+                  build_all
+                  or service_changed
+                  or monolith_dependency_changed
+              ):
+                  selected_services.append(service)
+
+          package_rows = []
+
+          for service in selected_services:
               package_rows.append(
-                  {**service, 'os': 'windows-latest', 'platform': 'windows'}
+                  {
+                      **service,
+                      "os": "ubuntu-latest",
+                      "platform": "linux",
+                  }
+              )
+
+              package_rows.append(
+                  {
+                      **service,
+                      "os": "windows-latest",
+                      "platform": "windows",
+                  }
               )
 
           package_matrix = json.dumps(
-              {'include': package_rows},
-              separators=(',', ':'),
+              {"include": package_rows},
+              separators=(",", ":"),
           )
+
           container_matrix = json.dumps(
-              {'include': services},
-              separators=(',', ':'),
+              {"include": selected_services},
+              separators=(",", ":"),
+          )
+
+          has_services = (
+              "true"
+              if selected_services
+              else "false"
           )
 
           with open(
-              os.environ['GITHUB_OUTPUT'],
-              'a',
-              encoding='utf-8',
+              os.environ["GITHUB_OUTPUT"],
+              "a",
+              encoding="utf-8",
           ) as output:
-              output.write(f'package-matrix={package_matrix}\n')
-              output.write(f'container-matrix={container_matrix}\n')
+              output.write(
+                  f"package-matrix={package_matrix}\n"
+              )
+              output.write(
+                  f"container-matrix={container_matrix}\n"
+              )
+              output.write(
+                  f"has-services={has_services}\n"
+              )
 
-          print('Runnable services:')
-          for service in services:
+          print("Changed files:")
+
+          if changed_files:
+              for file_name in sorted(changed_files):
+                  print(f"- {file_name}")
+          else:
+              print("- No changed files detected")
+
+          if selected_services:
+              print("Services selected for validation:")
+
+              for service in selected_services:
+                  print(
+                      f"- {service['id']}: "
+                      f"{service['path']} "
+                      f"(package base: {service['package_id']})"
+                  )
+          else:
               print(
-                  f"- {service['id']}: {service['path']} "
-                  f"(package base: {service['package_id']})"
+                  "No application service requires a package or container build."
               )
           PY
 
   package:
     name: Package ${{ matrix.id }} for ${{ matrix.platform }}
-    needs: discover
+    needs:
+      - discover
+    if: needs.discover.outputs.has-services == 'true'
     runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.package-matrix) }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -120,10 +253,19 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-          cache-dependency-path: '**/pom.xml'
+          cache-dependency-path: ${{ matrix.path }}/pom.xml
 
       - name: Build and test with Maven
-        run: mvn -B -ntp -f "${{ matrix.path }}/pom.xml" clean verify
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mvn \
+            -B \
+            -ntp \
+            -f "${{ matrix.path }}/pom.xml" \
+            clean \
+            verify
 
       - name: Create self-contained Linux package
         if: matrix.platform == 'linux'
@@ -137,9 +279,13 @@ jobs:
               -type f \
               -name '*.jar' \
               ! -name 'original-*.jar' |
-              head -n 1
+            head -n 1
           )"
-          test -n "$jar"
+
+          if [[ -z "$jar" ]]; then
+            echo "No executable Spring Boot JAR was found."
+            exit 1
+          fi
 
           app_name='durable-money-${{ matrix.id }}'
           input_dir='package-input/${{ matrix.id }}'
@@ -149,8 +295,14 @@ jobs:
           version='${{ needs.discover.outputs.release-version }}'
           package_file="dist/${package_id}.${version}.tar.gz"
 
-          rm -rf "$input_dir" "$jpackage_dir" "$bundle"
-          mkdir -p "$input_dir" "$jpackage_dir"
+          rm -rf \
+            "$input_dir" \
+            "$jpackage_dir" \
+            "$bundle"
+
+          mkdir -p \
+            "$input_dir" \
+            "$jpackage_dir"
 
           cp "$jar" "$input_dir/app.jar"
 
@@ -163,7 +315,9 @@ jobs:
             --java-options '-XX:MaxRAMPercentage=75' \
             --java-options '-XX:+ExitOnOutOfMemoryError'
 
-          mv "$jpackage_dir/$app_name" "$bundle"
+          mv \
+            "$jpackage_dir/$app_name" \
+            "$bundle"
 
           if [[ '${{ matrix.id }}' == '1-monolith' ]]; then
             install \
@@ -173,13 +327,24 @@ jobs:
 
             test -x "$bundle/Deploy.sh"
           fi
-          tar -C "$bundle" -czf "$GITHUB_WORKSPACE/$package_file" .
+
+          tar \
+            --dereference \
+            -C "$bundle" \
+            -czf "$GITHUB_WORKSPACE/$package_file" \
+            .
 
           echo "Created $package_file"
 
           contents_file="$RUNNER_TEMP/package-contents.txt"
-          tar -tzf "$package_file" > "$contents_file"
-          head -n 30 "$contents_file"
+
+          tar \
+            -tzf "$package_file" \
+            > "$contents_file"
+
+          head \
+            -n 30 \
+            "$contents_file"
 
       - name: Create self-contained Windows package
         if: matrix.platform == 'windows'
@@ -187,12 +352,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $jar = Get-ChildItem '${{ matrix.path }}/target/*.jar' |
-            Where-Object { $_.Name -notlike 'original-*.jar' } |
-            Select-Object -First 1
+          $jar = Get-ChildItem `
+              '${{ matrix.path }}/target/*.jar' |
+              Where-Object {
+                  $_.Name -notlike 'original-*.jar'
+              } |
+              Select-Object -First 1
 
           if (-not $jar) {
-            throw 'No executable Spring Boot JAR was found'
+              throw "No executable Spring Boot JAR was found."
           }
 
           $appName = 'durable-money-${{ matrix.id }}'
@@ -204,80 +372,114 @@ jobs:
           $packageFile = "dist/$packageId.$version.zip"
 
           Remove-Item `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue `
-            $inputDir, $jpackageDir, $bundle
+              -Recurse `
+              -Force `
+              -ErrorAction SilentlyContinue `
+              $inputDir, `
+              $jpackageDir, `
+              $bundle
 
           New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $inputDir, $jpackageDir |
-            Out-Null
+              -ItemType Directory `
+              -Force `
+              -Path $inputDir, $jpackageDir |
+              Out-Null
 
-          Copy-Item $jar.FullName "$inputDir/app.jar"
+          Copy-Item `
+              -LiteralPath $jar.FullName `
+              -Destination "$inputDir/app.jar"
 
           jpackage `
-            --type app-image `
-            --input $inputDir `
-            --main-jar app.jar `
-            --name $appName `
-            --dest $jpackageDir `
-            --java-options '-XX:MaxRAMPercentage=75' `
-            --java-options '-XX:+ExitOnOutOfMemoryError'
+              --type app-image `
+              --input $inputDir `
+              --main-jar app.jar `
+              --name $appName `
+              --dest $jpackageDir `
+              --java-options '-XX:MaxRAMPercentage=75' `
+              --java-options '-XX:+ExitOnOutOfMemoryError'
 
-          Move-Item "$jpackageDir/$appName" $bundle
+          Move-Item `
+              -LiteralPath "$jpackageDir/$appName" `
+              -Destination $bundle
 
           if ('${{ matrix.id }}' -eq '1-monolith') {
-            Copy-Item `
-              -LiteralPath 'octopus/package/windows/Deploy.ps1' `
-              -Destination (Join-Path $bundle 'Deploy.ps1') `
-              -Force
+              Copy-Item `
+                  -LiteralPath 'octopus/package/windows/Deploy.ps1' `
+                  -Destination (Join-Path $bundle 'Deploy.ps1') `
+                  -Force
 
-            $deployScript = Join-Path $bundle 'Deploy.ps1'
+              $deployScript = Join-Path `
+                  $bundle `
+                  'Deploy.ps1'
 
-            if (-not (
-              Test-Path `
-                -LiteralPath $deployScript `
-                -PathType Leaf
-            )) {
-              throw "The Windows Deploy.ps1 package script is missing."
-            }
+              if (-not (
+                  Test-Path `
+                      -LiteralPath $deployScript `
+                      -PathType Leaf
+              )) {
+                  throw "The Windows Deploy.ps1 package script is missing."
+              }
           }
 
-          $serviceToolsDir = Join-Path $bundle 'service'
+          $serviceToolsDir = Join-Path `
+              $bundle `
+              'service'
+
           New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $serviceToolsDir |
-            Out-Null
+              -ItemType Directory `
+              -Force `
+              -Path $serviceToolsDir |
+              Out-Null
 
           $winSwVersion = '2.12.0'
-          $winSwUrl = "https://github.com/winsw/winsw/releases/download/v$winSwVersion/WinSW-x64.exe"
-          $winSwLicenseUrl = "https://raw.githubusercontent.com/winsw/winsw/v$winSwVersion/LICENSE.txt"
+
+          $winSwUrl = `
+              "https://github.com/winsw/winsw/releases/download/v$winSwVersion/WinSW-x64.exe"
+
+          $winSwLicenseUrl = `
+              "https://raw.githubusercontent.com/winsw/winsw/v$winSwVersion/LICENSE.txt"
 
           $ProgressPreference = 'SilentlyContinue'
 
           Invoke-WebRequest `
-            -Uri $winSwUrl `
-            -OutFile (Join-Path $serviceToolsDir 'winsw.exe')
+              -Uri $winSwUrl `
+              -OutFile (
+                  Join-Path `
+                      $serviceToolsDir `
+                      'winsw.exe'
+              )
 
           Invoke-WebRequest `
-            -Uri $winSwLicenseUrl `
-            -OutFile (Join-Path $serviceToolsDir 'WinSW-LICENSE.txt')
+              -Uri $winSwLicenseUrl `
+              -OutFile (
+                  Join-Path `
+                      $serviceToolsDir `
+                      'WinSW-LICENSE.txt'
+              )
 
-          $winSwFile = Get-Item (Join-Path $serviceToolsDir 'winsw.exe')
+          $winSwFile = Get-Item (
+              Join-Path `
+                  $serviceToolsDir `
+                  'winsw.exe'
+          )
+
           if ($winSwFile.Length -lt 100000) {
-            throw "The downloaded WinSW executable is unexpectedly small: $($winSwFile.Length) bytes"
+              throw (
+                  "The downloaded WinSW executable is unexpectedly small: " +
+                  "$($winSwFile.Length) bytes"
+              )
           }
 
           Compress-Archive `
-            -Path "$bundle/*" `
-            -DestinationPath $packageFile `
-            -Force
+              -Path "$bundle/*" `
+              -DestinationPath $packageFile `
+              -Force
 
           Write-Host "Created $packageFile"
-          Write-Host "Bundled WinSW $winSwVersion for Windows service installation"
+          Write-Host (
+              "Bundled WinSW $winSwVersion " +
+              "for Windows service installation"
+          )
 
       - name: Upload deployment package
         uses: actions/upload-artifact@v4
@@ -287,14 +489,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-
   container:
     name: Container ${{ matrix.id }}
-    needs: discover
+    needs:
+      - discover
+    if: needs.discover.outputs.has-services == 'true'
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.container-matrix) }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -305,7 +510,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-
       - name: Generate image tags and labels
         id: metadata
         uses: docker/metadata-action@v5
@@ -315,7 +519,7 @@ jobs:
             type=raw,value=pr-${{ github.event.pull_request.number }}
             type=sha,prefix=sha-
 
-      - name: Build and publish container image
+      - name: Build container image
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.path }}
@@ -326,3 +530,47 @@ jobs:
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.id }}
           cache-to: type=gha,mode=max,scope=${{ matrix.id }}
+
+  validation:
+    name: Pull request validation
+    if: always()
+    needs:
+      - discover
+      - package
+      - container
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify validation results
+        env:
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Discover result: $DISCOVER_RESULT"
+          echo "Package result: $PACKAGE_RESULT"
+          echo "Container result: $CONTAINER_RESULT"
+
+          if [[ "$DISCOVER_RESULT" != "success" ]]; then
+            echo "Service discovery failed."
+            exit 1
+          fi
+
+          for result in \
+            "$PACKAGE_RESULT" \
+            "$CONTAINER_RESULT"; do
+
+            case "$result" in
+              success|skipped)
+                ;;
+              *)
+                echo "A validation job failed: $result"
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "Pull request validation succeeded."

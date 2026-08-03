@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+    paths:
+      - '1-monolith/**'
+      - 'octopus/package/linux/Deploy.sh'
+      - 'octopus/package/windows/Deploy.ps1'
+      - 'octopus/kubernetes/monolith.yaml'
+      - '.github/workflows/release-main.yml'
+      - 'pom.xml'
+      - '.mvn/**'
+      - 'mvnw'
+      - 'mvnw.cmd'
 
 concurrency:
   group: release-main
@@ -52,7 +62,7 @@ jobs:
           import re
 
           services = []
-          for dockerfile in pathlib.Path('.').rglob('Dockerfile'):
+          for dockerfile in pathlib.Path('1-monolith∑').rglob('Dockerfile'):
               directory = dockerfile.parent
               if not (directory / 'pom.xml').is_file():
                   continue
