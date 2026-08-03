@@ -1,0 +1,187 @@
+name = "Database Connectivity Check"
+cancel_queued_tasks = true
+cancel_running_tasks = true
+default_guided_failure_mode = "EnvironmentDefault"
+description = "Verifies PostgreSQL network connectivity from Linux, Windows and Kubernetes without displaying database credentials."
+environment_scope = "Specified"
+environments = ["development", "staging"]
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+}
+
+run_retention_policy {
+    type = "Default"
+}
+
+process {
+    step "check-database-connectivity-from-linux" {
+        name = "Check database connectivity from Linux"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-linux"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    host="$(get_octopusvariable "Project.Database.Host")"
+                    port="$(get_octopusvariable "Project.Database.Port")"
+                    database="$(get_octopusvariable "Project.Database.Name")"
+                    timeout_seconds="$(get_octopusvariable "Runbook.Database.TimeoutSeconds")"
+                    machine="$(get_octopusvariable "Octopus.Machine.Name")"
+                    environment="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ -z "$host" ]]; then
+                      echo "Project.Database.Host is empty."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$port" ]]; then
+                      echo "Project.Database.Port is empty."
+                      exit 1
+                    fi
+                    
+                    echo "Environment: ${environment}"
+                    echo "Target: ${machine}"
+                    echo "Database host: ${host}"
+                    echo "Database port: ${port}"
+                    echo "Database name: ${database}"
+                    
+                    if timeout \
+                      "$timeout_seconds" \
+                      bash -c "</dev/tcp/${host}/${port}" \
+                      2>/dev/null; then
+                      echo "PostgreSQL TCP endpoint is reachable from Linux."
+                    else
+                      echo "Unable to connect to ${host}:${port} from Linux."
+                      exit 1
+                    fi
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "check-database-connectivity-from-windows" {
+        name = "Check database connectivity from Windows"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-windows"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    $ErrorActionPreference = "Stop"
+                    
+                    $databaseHost = $OctopusParameters["Project.Database.Host"]
+                    $databasePort = [int]$OctopusParameters["Project.Database.Port"]
+                    $databaseName = $OctopusParameters["Project.Database.Name"]
+                    $machineName = $OctopusParameters["Octopus.Machine.Name"]
+                    $environmentName = $OctopusParameters["Octopus.Environment.Name"]
+                    
+                    if ([string]::IsNullOrWhiteSpace($databaseHost)) {
+                        throw "Project.Database.Host is empty."
+                    }
+                    
+                    Write-Host "Environment: $environmentName"
+                    Write-Host "Target: $machineName"
+                    Write-Host "Database host: $databaseHost"
+                    Write-Host "Database port: $databasePort"
+                    Write-Host "Database name: $databaseName"
+                    
+                    $result = Test-NetConnection `
+                        -ComputerName $databaseHost `
+                        -Port $databasePort `
+                        -InformationLevel Detailed
+                    
+                    Write-Host "Remote address: $($result.RemoteAddress)"
+                    Write-Host "TCP test succeeded: $($result.TcpTestSucceeded)"
+                    
+                    if (-not $result.TcpTestSucceeded) {
+                        throw "Unable to connect to $databaseHost`:$databasePort from Windows."
+                    }
+                    
+                    Write-Host "PostgreSQL TCP endpoint is reachable from Windows."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "PowerShell"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "check-database-connectivity-from-kubernetes" {
+        name = "Check database connectivity from Kubernetes"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-kubernetes"
+        }
+
+        action {
+            action_type = "Octopus.KubernetesRunScript"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    namespace="$(get_octopusvariable \
+                      "Library.DurableMoney.Kubernetes.Namespace")"
+                    
+                    host="$(get_octopusvariable "Project.Database.Host")"
+                    port="$(get_octopusvariable "Project.Database.Port")"
+                    database="$(get_octopusvariable "Project.Database.Name")"
+                    timeout_seconds="$(get_octopusvariable \
+                      "Runbook.Database.TimeoutSeconds")"
+                    
+                    environment="$(get_octopusvariable "Octopus.Environment.Name")"
+                    pod_name="database-connectivity-${RANDOM}"
+                    
+                    if [[ -z "$namespace" ]]; then
+                      echo "Kubernetes namespace is empty."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$host" ]]; then
+                      echo "Project.Database.Host is empty."
+                      exit 1
+                    fi
+                    
+                    echo "Environment: ${environment}"
+                    echo "Namespace: ${namespace}"
+                    echo "Database host: ${host}"
+                    echo "Database port: ${port}"
+                    echo "Database name: ${database}"
+                    
+                    kubectl \
+                      --namespace "$namespace" \
+                      run "$pod_name" \
+                      --rm \
+                      --attach \
+                      --restart=Never \
+                      --pod-running-timeout=60s \
+                      --image=postgres:17-alpine \
+                      --env="PGCONNECT_TIMEOUT=${timeout_seconds}" \
+                      --command \
+                      -- \
+                      pg_isready \
+                        --host="$host" \
+                        --port="$port" \
+                        --dbname="$database" \
+                        --timeout="$timeout_seconds"
+                    
+                    echo "PostgreSQL reports that it is accepting connections."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool = "hosted-windows"
+            worker_pool_variable = ""
+        }
+    }
+}

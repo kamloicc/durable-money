@@ -201,3 +201,9 @@ variable "Project.Windows.ServiceId" {
         environment = ["production"]
     }
 }
+
+variable "Database Connectivity Check" {
+    value "10" {
+        process = ["runbook/database-connectivity-check"]
+    }
+}
