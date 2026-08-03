@@ -14,4 +14,76 @@ run_retention_policy {
     type = "Count"
 }
 
-process {}
+process {
+    step "check-linux-application" {
+        name = "Check Linux application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-linux"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    app_port="$(get_octopusvariable "Project.Application.Port")"
+                    service_name="$(get_octopusvariable "Project.Linux.ServiceName")"
+                    machine_name="$(get_octopusvariable "Octopus.Machine.Name")"
+                    environment_name="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ -z "${app_port}" ]]; then
+                      echo "Project.Application.Port is missing."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "${service_name}" ]]; then
+                      echo "Project.Linux.ServiceName is missing."
+                      exit 1
+                    fi
+                    
+                    health_url="http://127.0.0.1:${app_port}/accounts"
+                    
+                    echo "Target: ${machine_name}"
+                    echo "Environment: ${environment_name}"
+                    echo "Service: ${service_name}"
+                    echo "Health URL: ${health_url}"
+                    
+                    if ! systemctl is-active --quiet "${service_name}"; then
+                      echo "Linux service is not running."
+                      systemctl status "${service_name}" --no-pager || true
+                      exit 1
+                    fi
+                    
+                    echo "Linux service is running."
+                    
+                    response_file="$(mktemp)"
+                    trap 'rm -f "${response_file}"' EXIT
+                    
+                    if ! curl \
+                      --fail \
+                      --silent \
+                      --show-error \
+                      --max-time 15 \
+                      --output "${response_file}" \
+                      "${health_url}"; then
+                      echo "Application request failed."
+                      systemctl status "${service_name}" --no-pager || true
+                      exit 1
+                    fi
+                    
+                    if [[ ! -s "${response_file}" ]]; then
+                      echo "Application returned an empty response."
+                      exit 1
+                    fi
+                    
+                    echo "Linux application is healthy."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool_variable = ""
+        }
+    }
+}
