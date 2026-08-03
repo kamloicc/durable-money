@@ -86,4 +86,71 @@ process {
             worker_pool_variable = ""
         }
     }
+
+    step "check-windows-application" {
+        name = "Check Windows application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-windows"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    $ErrorActionPreference = "Stop"
+                    
+                    $appPort = $OctopusParameters["Project.Application.Port"]
+                    $displayName = $OctopusParameters["Project.Windows.ServiceName"]
+                    $machineName = $OctopusParameters["Octopus.Machine.Name"]
+                    $environmentName = $OctopusParameters["Octopus.Environment.Name"]
+                    
+                    if ([string]::IsNullOrWhiteSpace($appPort)) {
+                        throw "Project.Application.Port is missing."
+                    }
+                    
+                    if ([string]::IsNullOrWhiteSpace($displayName)) {
+                        throw "Project.Windows.ServiceName is missing."
+                    }
+                    
+                    $serviceId = $displayName -replace "[^A-Za-z0-9]", ""
+                    
+                    if ([string]::IsNullOrWhiteSpace($serviceId)) {
+                        throw "The Windows service ID could not be derived from '$displayName'."
+                    }
+                    
+                    $healthUrl = "http://127.0.0.1:$appPort/accounts"
+                    
+                    Write-Host "Target: $machineName"
+                    Write-Host "Environment: $environmentName"
+                    Write-Host "Service ID: $serviceId"
+                    Write-Host "Health URL: $healthUrl"
+                    
+                    $service = Get-Service `
+                        -Name $serviceId `
+                        -ErrorAction Stop
+                    
+                    if ($service.Status -ne "Running") {
+                        throw "Windows service '$serviceId' is $($service.Status), not Running."
+                    }
+                    
+                    Write-Host "Windows service is running."
+                    
+                    $response = Invoke-RestMethod `
+                        -Method Get `
+                        -Uri $healthUrl `
+                        -TimeoutSec 15
+                    
+                    if ($null -eq $response) {
+                        throw "The application returned an empty response."
+                    }
+                    
+                    Write-Host "Windows application is healthy."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "PowerShell"
+            }
+            worker_pool_variable = ""
+        }
+    }
 }
