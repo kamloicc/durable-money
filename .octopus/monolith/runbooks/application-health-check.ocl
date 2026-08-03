@@ -153,4 +153,104 @@ process {
             worker_pool_variable = ""
         }
     }
+
+    step "check-kubernetes-application" {
+        name = "Check Kubernetes application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-kubernetes"
+        }
+
+        action {
+            action_type = "Octopus.KubernetesRunScript"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    namespace="$(get_octopusvariable "Library.DurableMoney.Kubernetes.Namespace")"
+                    deployment="$(get_octopusvariable "Project.Kubernetes.DeploymentName")"
+                    environment_name="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ -z "${namespace}" ]]; then
+                      echo "Library.DurableMoney.Kubernetes.Namespace is missing."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "${deployment}" ]]; then
+                      echo "Project.Kubernetes.DeploymentName is missing."
+                      exit 1
+                    fi
+                    
+                    echo "Environment: ${environment_name}"
+                    echo "Namespace: ${namespace}"
+                    echo "Deployment: ${deployment}"
+                    
+                    kubectl \
+                      --namespace "${namespace}" \
+                      rollout status \
+                      "deployment/${deployment}" \
+                      --timeout=120s
+                    
+                    desired="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.spec.replicas}'
+                    )"
+                    
+                    ready="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.status.readyReplicas}'
+                    )"
+                    
+                    available="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.status.availableReplicas}'
+                    )"
+                    
+                    image="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.spec.template.spec.containers[0].image}'
+                    )"
+                    
+                    ready="${ready:-0}"
+                    available="${available:-0}"
+                    
+                    echo "Desired replicas: ${desired}"
+                    echo "Ready replicas: ${ready}"
+                    echo "Available replicas: ${available}"
+                    echo "Image: ${image}"
+                    
+                    if [[ "${ready}" != "${desired}" ]]; then
+                      echo "Not all replicas are ready."
+                      kubectl --namespace "${namespace}" get pods -o wide
+                      exit 1
+                    fi
+                    
+                    if [[ "${available}" != "${desired}" ]]; then
+                      echo "Not all replicas are available."
+                      kubectl --namespace "${namespace}" get pods -o wide
+                      exit 1
+                    fi
+                    
+                    kubectl \
+                      --namespace "${namespace}" \
+                      get pods \
+                      -l app.kubernetes.io/name=durable-money-monolith \
+                      -o wide
+                    
+                    echo "Kubernetes application is healthy."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool = "hosted-windows"
+            worker_pool_variable = ""
+        }
+    }
 }
