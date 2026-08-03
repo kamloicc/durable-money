@@ -56,6 +56,8 @@ process {
                       xargs
                     )"
                     
+                    timeout_seconds="${timeout_seconds:-10}"
+                    
                     machine="$(get_octopusvariable "Octopus.Machine.Name")"
                     environment="$(get_octopusvariable "Octopus.Environment.Name")"
                     
@@ -69,10 +71,7 @@ process {
                       exit 1
                     fi
                     
-                    if [[ -z "$timeout_seconds" ]]; then
-                      echo "Runbook.Database.TimeoutSeconds is empty."
-                      exit 1
-                    fi
+                    
                     
                     echo "Environment: ${environment}"
                     echo "Target: ${machine}"
