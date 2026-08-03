@@ -1,0 +1,256 @@
+name = "Application Health Check"
+cancel_queued_tasks = true
+cancel_running_tasks = true
+default_guided_failure_mode = "EnvironmentDefault"
+description = "Verifies the Durable Money application on Linux, Windows and Kubernetes without changing application state."
+environment_scope = "FromProjectLifecycles"
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+}
+
+run_retention_policy {
+    quantity_to_keep = 20
+    type = "Count"
+}
+
+process {
+    step "check-linux-application" {
+        name = "Check Linux application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-linux"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    app_port="$(get_octopusvariable "Project.Application.Port")"
+                    service_name="$(get_octopusvariable "Project.Linux.ServiceName")"
+                    machine_name="$(get_octopusvariable "Octopus.Machine.Name")"
+                    environment_name="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ -z "${app_port}" ]]; then
+                      echo "Project.Application.Port is missing."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "${service_name}" ]]; then
+                      echo "Project.Linux.ServiceName is missing."
+                      exit 1
+                    fi
+                    
+                    health_url="http://127.0.0.1:${app_port}/accounts"
+                    
+                    echo "Target: ${machine_name}"
+                    echo "Environment: ${environment_name}"
+                    echo "Service: ${service_name}"
+                    echo "Health URL: ${health_url}"
+                    
+                    if ! systemctl is-active --quiet "${service_name}"; then
+                      echo "Linux service is not running."
+                      systemctl status "${service_name}" --no-pager || true
+                      exit 1
+                    fi
+                    
+                    echo "Linux service is running."
+                    
+                    response_file="$(mktemp)"
+                    trap 'rm -f "${response_file}"' EXIT
+                    
+                    if ! curl \
+                      --fail \
+                      --silent \
+                      --show-error \
+                      --max-time 15 \
+                      --output "${response_file}" \
+                      "${health_url}"; then
+                      echo "Application request failed."
+                      systemctl status "${service_name}" --no-pager || true
+                      exit 1
+                    fi
+                    
+                    if [[ ! -s "${response_file}" ]]; then
+                      echo "Application returned an empty response."
+                      exit 1
+                    fi
+                    
+                    echo "Linux application is healthy."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "check-windows-application" {
+        name = "Check Windows application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-windows"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    $ErrorActionPreference = "Stop"
+                    
+                    $appPort = $OctopusParameters["Project.Application.Port"]
+                    $displayName = $OctopusParameters["Project.Windows.ServiceName"]
+                    $machineName = $OctopusParameters["Octopus.Machine.Name"]
+                    $environmentName = $OctopusParameters["Octopus.Environment.Name"]
+                    
+                    if ([string]::IsNullOrWhiteSpace($appPort)) {
+                        throw "Project.Application.Port is missing."
+                    }
+                    
+                    if ([string]::IsNullOrWhiteSpace($displayName)) {
+                        throw "Project.Windows.ServiceName is missing."
+                    }
+                    
+                    $serviceId = $displayName -replace "[^A-Za-z0-9]", ""
+                    
+                    if ([string]::IsNullOrWhiteSpace($serviceId)) {
+                        throw "The Windows service ID could not be derived from '$displayName'."
+                    }
+                    
+                    $healthUrl = "http://127.0.0.1:$appPort/accounts"
+                    
+                    Write-Host "Target: $machineName"
+                    Write-Host "Environment: $environmentName"
+                    Write-Host "Service ID: $serviceId"
+                    Write-Host "Health URL: $healthUrl"
+                    
+                    $service = Get-Service `
+                        -Name $serviceId `
+                        -ErrorAction Stop
+                    
+                    if ($service.Status -ne "Running") {
+                        throw "Windows service '$serviceId' is $($service.Status), not Running."
+                    }
+                    
+                    Write-Host "Windows service is running."
+                    
+                    $response = Invoke-RestMethod `
+                        -Method Get `
+                        -Uri $healthUrl `
+                        -TimeoutSec 15
+                    
+                    if ($null -eq $response) {
+                        throw "The application returned an empty response."
+                    }
+                    
+                    Write-Host "Windows application is healthy."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "PowerShell"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "check-kubernetes-application" {
+        name = "Check Kubernetes application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-kubernetes"
+        }
+
+        action {
+            action_type = "Octopus.KubernetesRunScript"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    namespace="$(get_octopusvariable "Library.DurableMoney.Kubernetes.Namespace")"
+                    deployment="$(get_octopusvariable "Project.Kubernetes.DeploymentName")"
+                    environment_name="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ -z "${namespace}" ]]; then
+                      echo "Library.DurableMoney.Kubernetes.Namespace is missing."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "${deployment}" ]]; then
+                      echo "Project.Kubernetes.DeploymentName is missing."
+                      exit 1
+                    fi
+                    
+                    echo "Environment: ${environment_name}"
+                    echo "Namespace: ${namespace}"
+                    echo "Deployment: ${deployment}"
+                    
+                    kubectl \
+                      --namespace "${namespace}" \
+                      rollout status \
+                      "deployment/${deployment}" \
+                      --timeout=120s
+                    
+                    desired="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.spec.replicas}'
+                    )"
+                    
+                    ready="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.status.readyReplicas}'
+                    )"
+                    
+                    available="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.status.availableReplicas}'
+                    )"
+                    
+                    image="$(
+                      kubectl \
+                        --namespace "${namespace}" \
+                        get deployment "${deployment}" \
+                        -o jsonpath='{.spec.template.spec.containers[0].image}'
+                    )"
+                    
+                    ready="${ready:-0}"
+                    available="${available:-0}"
+                    
+                    echo "Desired replicas: ${desired}"
+                    echo "Ready replicas: ${ready}"
+                    echo "Available replicas: ${available}"
+                    echo "Image: ${image}"
+                    
+                    if [[ "${ready}" != "${desired}" ]]; then
+                      echo "Not all replicas are ready."
+                      kubectl --namespace "${namespace}" get pods -o wide
+                      exit 1
+                    fi
+                    
+                    if [[ "${available}" != "${desired}" ]]; then
+                      echo "Not all replicas are available."
+                      kubectl --namespace "${namespace}" get pods -o wide
+                      exit 1
+                    fi
+                    
+                    kubectl \
+                      --namespace "${namespace}" \
+                      get pods \
+                      -l app.kubernetes.io/name=durable-money-monolith \
+                      -o wide
+                    
+                    echo "Kubernetes application is healthy."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool = "hosted-windows"
+            worker_pool_variable = ""
+        }
+    }
+}
