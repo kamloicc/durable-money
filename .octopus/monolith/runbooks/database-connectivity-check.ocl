@@ -143,6 +143,15 @@ process {
                     $machineName = $OctopusParameters["Octopus.Machine.Name"]
                     $environmentName = $OctopusParameters["Octopus.Environment.Name"]
                     
+                    $timeoutValue = $OctopusParameters["Runbook.Database.TimeoutSeconds"]
+                    
+                    if ([string]::IsNullOrWhiteSpace($timeoutValue)) {
+                        $timeoutSeconds = 10
+                    }
+                    else {
+                        $timeoutSeconds = [int]$timeoutValue
+                    }
+                    
                     if ([string]::IsNullOrWhiteSpace($databaseHost)) {
                         throw "Project.Database.Host is empty."
                     }
@@ -166,6 +175,8 @@ process {
                     }
                     
                     Write-Host "PostgreSQL TCP endpoint is reachable from Windows."
+                    
+                    
                     EOT
                 Octopus.Action.Script.ScriptSource = "Inline"
                 Octopus.Action.Script.Syntax = "PowerShell"
