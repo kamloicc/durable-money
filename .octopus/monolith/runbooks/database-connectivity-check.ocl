@@ -28,10 +28,34 @@ process {
                 Octopus.Action.Script.ScriptBody = <<-EOT
                     set -euo pipefail
                     
-                    host="$(get_octopusvariable "Project.Database.Host")"
-                    port="$(get_octopusvariable "Project.Database.Port")"
-                    database="$(get_octopusvariable "Project.Database.Name")"
-                    timeout_seconds="$(get_octopusvariable "Runbook.Database.TimeoutSeconds")"
+                    host="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Project.Database.Host")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
+                    port="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Project.Database.Port")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
+                    database="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Project.Database.Name")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
+                    timeout_seconds="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Runbook.Database.TimeoutSeconds")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
                     machine="$(get_octopusvariable "Octopus.Machine.Name")"
                     environment="$(get_octopusvariable "Octopus.Environment.Name")"
                     
@@ -45,19 +69,52 @@ process {
                       exit 1
                     fi
                     
+                    if [[ -z "$timeout_seconds" ]]; then
+                      echo "Runbook.Database.TimeoutSeconds is empty."
+                      exit 1
+                    fi
+                    
                     echo "Environment: ${environment}"
                     echo "Target: ${machine}"
                     echo "Database host: ${host}"
                     echo "Database port: ${port}"
                     echo "Database name: ${database}"
                     
+                    echo "Resolving database host..."
+                    
+                    resolved_addresses="$(
+                      getent ahostsv4 "$host" |
+                      awk '{print $1}' |
+                      sort -u
+                    )"
+                    
+                    if [[ -z "$resolved_addresses" ]]; then
+                      echo "DNS resolution failed for ${host}."
+                      exit 1
+                    fi
+                    
+                    echo "Resolved IPv4 addresses:"
+                    printf '%s\n' "$resolved_addresses"
+                    
+                    echo "Opening TCP connection to ${host}:${port}..."
+                    
                     if timeout \
-                      "$timeout_seconds" \
-                      bash -c "</dev/tcp/${host}/${port}" \
-                      2>/dev/null; then
+                      "${timeout_seconds}s" \
+                      bash -c '
+                        exec 3<>"/dev/tcp/$1/$2"
+                        exec 3>&-
+                        exec 3<&-
+                      ' \
+                      _ \
+                      "$host" \
+                      "$port"; then
+                    
                       echo "PostgreSQL TCP endpoint is reachable from Linux."
                     else
-                      echo "Unable to connect to ${host}:${port} from Linux."
+                      status=$?
+                    
+                      echo "TCP connection to ${host}:${port} failed."
+                      echo "Connection command exit code: ${status}"
                       exit 1
                     fi
                     EOT
