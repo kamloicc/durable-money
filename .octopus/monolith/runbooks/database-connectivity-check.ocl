@@ -70,8 +70,7 @@ process {
                       echo "Project.Database.Port is empty."
                       exit 1
                     fi
-                    
-                    
+                                      
                     
                     echo "Environment: ${environment}"
                     echo "Target: ${machine}"
