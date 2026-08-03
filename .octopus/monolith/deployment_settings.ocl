@@ -1,0 +1,35 @@
+cancel_queued_tasks = true
+cancel_running_tasks = true
+release_notes_template = <<-EOT
+         # Durable Money #{Octopus.Release.Number}
+        
+        **Channel:** #{Octopus.Release.Channel.Name}
+        
+        ## Work items
+        
+        #{each workItem in Octopus.Release.WorkItems}
+        - [#{workItem.Id}](#{workItem.LinkUrl}) — #{workItem.Description}
+        #{/each}
+        
+        ## Packages
+        
+        #{each package in Octopus.Release.Package}
+        - `#{package.PackageId}` — `#{package.Version}`
+        #{/each}
+        
+        ## Contributing builds
+        
+        #{each build in Octopus.Release.Builds}
+        - Build: [#{build.BuildNumber}](#{build.BuildUrl})
+        - Branch: `#{build.Branch}`
+        - Commit: [#{build.VcsCommitNumber}](#{build.VcsCommitUrl})
+        #{/each}
+        EOT
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+}
+
+versioning_strategy {
+    template = "#{Octopus.Version.LastMajor}.#{Octopus.Version.LastMinor}.#{Octopus.Version.NextPatch}"
+}
