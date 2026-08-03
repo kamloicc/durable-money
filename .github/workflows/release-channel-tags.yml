@@ -411,6 +411,8 @@ jobs:
           project: ${{ env.OCTOPUS_PROJECT }}
           release_number: ${{ env.RELEASE_VERSION }}
           channel: ${{ env.OCTOPUS_CHANNEL }}
+          git_ref: ${{ github.ref }}
+          git_commit: ${{ github.sha }}
           git_resources: |
             Deploy monolith to AKS:${{ github.ref }}
           packages: |
