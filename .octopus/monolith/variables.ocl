@@ -185,3 +185,19 @@ variable "Runbook.Restart.Confirmation" {
         }
     }
 }
+
+variable "Project.Windows.ServiceId" {
+    value "DurableMoneyMonolithDev" {
+        environment = ["development"]
+    }
+
+    value "DurableMoneyMonolithStaging" {
+        description = ""
+        environment = ["staging"]
+    }
+
+    value "DurableMoneyMonolithProd" {
+        description = ""
+        environment = ["production"]
+    }
+}
