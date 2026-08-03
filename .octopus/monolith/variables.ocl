@@ -207,3 +207,9 @@ variable "Database Connectivity Check" {
         process = ["runbook/database-connectivity-check"]
     }
 }
+
+variable "Runbook.Database.TimeoutSeconds" {
+    value "10" {
+        process = ["runbook/database-connectivity-check"]
+    }
+}

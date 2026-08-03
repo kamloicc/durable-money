@@ -56,6 +56,8 @@ process {
                       xargs
                     )"
                     
+                    timeout_seconds="${timeout_seconds:-10}"
+                    
                     machine="$(get_octopusvariable "Octopus.Machine.Name")"
                     environment="$(get_octopusvariable "Octopus.Environment.Name")"
                     
@@ -68,11 +70,7 @@ process {
                       echo "Project.Database.Port is empty."
                       exit 1
                     fi
-                    
-                    if [[ -z "$timeout_seconds" ]]; then
-                      echo "Runbook.Database.TimeoutSeconds is empty."
-                      exit 1
-                    fi
+                                      
                     
                     echo "Environment: ${environment}"
                     echo "Target: ${machine}"
@@ -144,6 +142,15 @@ process {
                     $machineName = $OctopusParameters["Octopus.Machine.Name"]
                     $environmentName = $OctopusParameters["Octopus.Environment.Name"]
                     
+                    $timeoutValue = $OctopusParameters["Runbook.Database.TimeoutSeconds"]
+                    
+                    if ([string]::IsNullOrWhiteSpace($timeoutValue)) {
+                        $timeoutSeconds = 10
+                    }
+                    else {
+                        $timeoutSeconds = [int]$timeoutValue
+                    }
+                    
                     if ([string]::IsNullOrWhiteSpace($databaseHost)) {
                         throw "Project.Database.Host is empty."
                     }
@@ -167,6 +174,8 @@ process {
                     }
                     
                     Write-Host "PostgreSQL TCP endpoint is reachable from Windows."
+                    
+                    
                     EOT
                 Octopus.Action.Script.ScriptSource = "Inline"
                 Octopus.Action.Script.Syntax = "PowerShell"
