@@ -3,13 +3,15 @@ cancel_queued_tasks = true
 cancel_running_tasks = true
 default_guided_failure_mode = "EnvironmentDefault"
 description = "Verifies the Durable Money application on Linux, Windows and Kubernetes without changing application state."
+environment_scope = "FromProjectLifecycles"
 
 connectivity_policy {
     allow_deployments_to_no_targets = true
 }
 
 run_retention_policy {
-    type = "Default"
+    quantity_to_keep = 20
+    type = "Count"
 }
 
 process {}
