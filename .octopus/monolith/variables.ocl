@@ -1,0 +1,141 @@
+variable "Project.Application.Name" {
+    value "durable-money-monolith" {}
+}
+
+variable "Project.Application.Port" {
+    value "8081" {
+        environment = ["development"]
+    }
+
+    value "8082" {
+        environment = ["staging"]
+    }
+
+    value "8083" {
+        environment = ["production"]
+    }
+}
+
+variable "Project.Container.Image" {
+    value "ghcr.io/kamloicc/durable-money-1-monolith" {}
+}
+
+variable "Project.Database.Host" {
+    value "psql-durable-money-l02qe.postgres.database.azure.com" {}
+}
+
+variable "Project.Database.JdbcUrl" {
+    value "jdbc:postgresql://#{Project.Database.Host}:#{Project.Database.Port}/#{Project.Database.Name}?sslmode=require" {}
+}
+
+variable "Project.Database.Name" {
+    value "moneydb_dev" {
+        environment = ["development"]
+    }
+
+    value "moneydb_staging" {
+        environment = ["staging"]
+    }
+
+    value "moneydb_prod" {
+        environment = ["production"]
+    }
+}
+
+variable "Project.Database.Pool.MaximumSize" {
+    value "3" {}
+}
+
+variable "Project.Database.Pool.MinimumIdle" {
+    value "1" {}
+}
+
+variable "Project.Database.Port" {
+    value "5432" {}
+}
+
+variable "Project.Database.Username" {
+    value "dmadmin" {}
+}
+
+variable "Project.Kubernetes.ContainerPort" {
+    value "8080" {}
+}
+
+variable "Project.Kubernetes.DeploymentName" {
+    value "durable-money-monolith" {}
+}
+
+variable "Project.Kubernetes.ServiceName" {
+    value "durable-money-monolith" {}
+}
+
+variable "Project.Linux.InstallDirectory" {
+    value "/opt/durable-money/dev/monolith" {
+        environment = ["development"]
+    }
+
+    value "/opt/durable-money/staging/monolith" {
+        environment = ["staging"]
+    }
+
+    value "/opt/durable-money/prod/monolith" {
+        environment = ["production"]
+    }
+}
+
+variable "Project.Linux.ServiceName" {
+    value "durable-money-monolith-dev" {
+        environment = ["development"]
+    }
+
+    value "durable-money-monolith-staging" {
+        environment = ["staging"]
+    }
+
+    value "durable-money-monolith-prod" {
+        environment = ["production"]
+    }
+}
+
+variable "Project.Management.Port" {
+    value "9081" {
+        environment = ["development"]
+    }
+
+    value "9082" {
+        environment = ["staging"]
+    }
+
+    value "9083" {
+        environment = ["production"]
+    }
+}
+
+variable "Project.Windows.InstallDirectory" {
+    value "C:\\Apps\\DurableMoney\\Dev\\Monolith" {
+        environment = ["development"]
+    }
+
+    value "C:\\Apps\\DurableMoney\\Staging\\Monolith" {
+        environment = ["staging"]
+    }
+
+    value "C:\\Apps\\DurableMoney\\Prod\\Monolith" {
+        environment = ["production"]
+    }
+}
+
+variable "Project.Windows.ServiceName" {
+    value "DurableMoney-Monolith-Dev" {
+        environment = ["development"]
+    }
+
+    value "DurableMoney-Monolith-Staging" {
+        environment = ["staging"]
+    }
+
+    value "DurableMoney-Monolith-Prod" {
+        environment = ["production"]
+    }
+}
