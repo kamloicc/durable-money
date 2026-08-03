@@ -196,17 +196,60 @@ process {
                 Octopus.Action.Script.ScriptBody = <<-EOT
                     set -euo pipefail
                     
-                    namespace="$(get_octopusvariable \
-                      "Library.DurableMoney.Kubernetes.Namespace")"
+                    namespace="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Library.DurableMoney.Kubernetes.Namespace")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
                     
-                    host="$(get_octopusvariable "Project.Database.Host")"
-                    port="$(get_octopusvariable "Project.Database.Port")"
-                    database="$(get_octopusvariable "Project.Database.Name")"
-                    timeout_seconds="$(get_octopusvariable \
-                      "Runbook.Database.TimeoutSeconds")"
+                    host="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Project.Database.Host")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
                     
-                    environment="$(get_octopusvariable "Octopus.Environment.Name")"
-                    pod_name="database-connectivity-${RANDOM}"
+                    port="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Project.Database.Port")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
+                    database="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Project.Database.Name")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
+                    timeout_seconds="$(
+                      printf '%s' \
+                        "$(get_octopusvariable "Runbook.Database.TimeoutSeconds")" |
+                      tr -d '\r\n' |
+                      xargs
+                    )"
+                    
+                    timeout_seconds="${timeout_seconds:-10}"
+                    
+                    environment="$(
+                      get_octopusvariable "Octopus.Environment.Name"
+                    )"
+                    
+                    pod_name="database-connectivity-$(date +%s)-${RANDOM}"
+                    
+                    cleanup() {
+                      kubectl \
+                        --namespace "$namespace" \
+                        delete pod "$pod_name" \
+                        --ignore-not-found \
+                        --wait=false \
+                        >/dev/null 2>&1 ||
+                      true
+                    }
+                    
+                    trap cleanup EXIT
                     
                     if [[ -z "$namespace" ]]; then
                       echo "Kubernetes namespace is empty."
@@ -218,30 +261,111 @@ process {
                       exit 1
                     fi
                     
+                    if [[ -z "$port" ]]; then
+                      echo "Project.Database.Port is empty."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$database" ]]; then
+                      echo "Project.Database.Name is empty."
+                      exit 1
+                    fi
+                    
                     echo "Environment: ${environment}"
                     echo "Namespace: ${namespace}"
                     echo "Database host: ${host}"
                     echo "Database port: ${port}"
                     echo "Database name: ${database}"
+                    echo "Creating temporary pod: ${pod_name}"
+                    
+                    cat <<EOF |
+                    apiVersion: v1
+                    kind: Pod
+                    metadata:
+                      name: ${pod_name}
+                      namespace: ${namespace}
+                      labels:
+                        app.kubernetes.io/name: database-connectivity-check
+                        app.kubernetes.io/managed-by: octopus-deploy
+                    spec:
+                      restartPolicy: Never
+                      containers:
+                        - name: postgres-client
+                          image: postgres:17-alpine
+                          imagePullPolicy: IfNotPresent
+                          env:
+                            - name: PGCONNECT_TIMEOUT
+                              value: "${timeout_seconds}"
+                          resources:
+                            requests:
+                              cpu: 10m
+                              memory: 32Mi
+                            limits:
+                              cpu: 100m
+                              memory: 128Mi
+                          command:
+                            - pg_isready
+                          args:
+                            - "--host=${host}"
+                            - "--port=${port}"
+                            - "--dbname=${database}"
+                            - "--timeout=${timeout_seconds}"
+                    EOF
+                    kubectl create -f -
+                    
+                    deadline=$((SECONDS + 120))
+                    
+                    while ((SECONDS < deadline)); do
+                      phase="$(
+                        kubectl \
+                          --namespace "$namespace" \
+                          get pod "$pod_name" \
+                          -o jsonpath='{.status.phase}' \
+                          2>/dev/null ||
+                        true
+                      )"
+                    
+                      case "$phase" in
+                        Succeeded)
+                          echo "Temporary pod completed successfully."
+                    
+                          kubectl \
+                            --namespace "$namespace" \
+                            logs "$pod_name"
+                    
+                          echo "PostgreSQL is reachable from Kubernetes."
+                          exit 0
+                          ;;
+                    
+                        Failed)
+                          echo "Temporary pod failed."
+                    
+                          kubectl \
+                            --namespace "$namespace" \
+                            logs "$pod_name" ||
+                          true
+                    
+                          kubectl \
+                            --namespace "$namespace" \
+                            describe pod "$pod_name" ||
+                          true
+                    
+                          exit 1
+                          ;;
+                      esac
+                    
+                      echo "Waiting for connectivity pod; current phase: ${phase:-Pending}"
+                      sleep 2
+                    done
+                    
+                    echo "The connectivity pod did not finish within 120 seconds."
                     
                     kubectl \
                       --namespace "$namespace" \
-                      run "$pod_name" \
-                      --rm \
-                      --attach \
-                      --restart=Never \
-                      --pod-running-timeout=60s \
-                      --image=postgres:17-alpine \
-                      --env="PGCONNECT_TIMEOUT=${timeout_seconds}" \
-                      --command \
-                      -- \
-                      pg_isready \
-                        --host="$host" \
-                        --port="$port" \
-                        --dbname="$database" \
-                        --timeout="$timeout_seconds"
+                      describe pod "$pod_name" ||
+                    true
                     
-                    echo "PostgreSQL reports that it is accepting connections."
+                    exit 1
                     EOT
                 Octopus.Action.Script.ScriptSource = "Inline"
                 Octopus.Action.Script.Syntax = "Bash"
