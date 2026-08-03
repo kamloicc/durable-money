@@ -14,4 +14,327 @@ run_retention_policy {
     type = "Default"
 }
 
-process {}
+process {
+    step "restart-linux-application" {
+        name = "Restart Linux application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-linux"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    confirmation="$(get_octopusvariable "Runbook.Restart.Confirmation")"
+                    reason="$(get_octopusvariable "Runbook.Restart.Reason")"
+                    service_name="$(get_octopusvariable "Project.Linux.ServiceName")"
+                    management_port="$(get_octopusvariable "Project.Management.Port")"
+                    health_path="$(get_octopusvariable "Runbook.Restart.HealthPath")"
+                    timeout_seconds="$(get_octopusvariable "Runbook.Restart.TimeoutSeconds")"
+                    machine_name="$(get_octopusvariable "Octopus.Machine.Name")"
+                    environment_name="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ "$confirmation" != "RESTART" ]]; then
+                      echo "Restart confirmation was not RESTART."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$reason" ]]; then
+                      echo "A restart reason is required."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$service_name" ]]; then
+                      echo "Project.Linux.ServiceName is empty."
+                      exit 1
+                    fi
+                    
+                    health_url="http://127.0.0.1:${management_port}${health_path}"
+                    
+                    echo "Environment: ${environment_name}"
+                    echo "Target: ${machine_name}"
+                    echo "Service: ${service_name}"
+                    echo "Reason: ${reason}"
+                    echo "Health endpoint: ${health_url}"
+                    
+                    echo "Restarting Linux service..."
+                    systemctl restart "$service_name"
+                    
+                    deadline=$((SECONDS + timeout_seconds))
+                    
+                    while (( SECONDS < deadline )); do
+                      service_state="$(systemctl is-active "$service_name" || true)"
+                    
+                      if [[ "$service_state" == "active" ]]; then
+                        response="$(
+                          curl \
+                            --fail \
+                            --silent \
+                            --max-time 5 \
+                            "$health_url" \
+                            2>/dev/null ||
+                          true
+                        )"
+                    
+                        if printf '%s' "$response" |
+                          grep -Eq '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+                          echo "Health response: ${response}"
+                          echo "Linux application restarted successfully."
+                          exit 0
+                        fi
+                      fi
+                    
+                      echo "Waiting for Linux application to recover..."
+                      sleep 3
+                    done
+                    
+                    echo "Linux application did not recover within ${timeout_seconds} seconds."
+                    systemctl status "$service_name" --no-pager || true
+                    
+                    journalctl \
+                      --unit "$service_name" \
+                      --lines 50 \
+                      --no-pager ||
+                    true
+                    
+                    exit 1
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "restart-windows-application" {
+        name = "Restart Windows application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-windows"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    $ErrorActionPreference = "Stop"
+                    
+                    $confirmation = $OctopusParameters["Runbook.Restart.Confirmation"]
+                    $reason = $OctopusParameters["Runbook.Restart.Reason"]
+                    $serviceId = $OctopusParameters["Project.Windows.ServiceId"]
+                    $managementPort = $OctopusParameters["Project.Management.Port"]
+                    $healthPath = $OctopusParameters["Runbook.Restart.HealthPath"]
+                    $timeoutSeconds = [int]$OctopusParameters["Runbook.Restart.TimeoutSeconds"]
+                    $machineName = $OctopusParameters["Octopus.Machine.Name"]
+                    $environmentName = $OctopusParameters["Octopus.Environment.Name"]
+                    
+                    if ($confirmation -ne "RESTART") {
+                        throw "Restart confirmation was not RESTART."
+                    }
+                    
+                    if ([string]::IsNullOrWhiteSpace($reason)) {
+                        throw "A restart reason is required."
+                    }
+                    
+                    if ([string]::IsNullOrWhiteSpace($serviceId)) {
+                        throw "Project.Windows.ServiceId is empty."
+                    }
+                    
+                    $healthUrl = "http://127.0.0.1:$managementPort$healthPath"
+                    
+                    Write-Host "Environment: $environmentName"
+                    Write-Host "Target: $machineName"
+                    Write-Host "Service: $serviceId"
+                    Write-Host "Reason: $reason"
+                    Write-Host "Health endpoint: $healthUrl"
+                    
+                    Write-Host "Restarting Windows service..."
+                    
+                    Restart-Service `
+                        -Name $serviceId `
+                        -Force `
+                        -ErrorAction Stop
+                    
+                    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+                    
+                    while ((Get-Date) -lt $deadline) {
+                        $service = Get-Service `
+                            -Name $serviceId `
+                            -ErrorAction Stop
+                    
+                        if ($service.Status -eq "Running") {
+                            try {
+                                $health = Invoke-RestMethod `
+                                    -Method Get `
+                                    -Uri $healthUrl `
+                                    -TimeoutSec 5
+                    
+                                if ($health.status -eq "UP") {
+                                    Write-Host "Application health status: $($health.status)"
+                                    Write-Host "Windows application restarted successfully."
+                                    exit 0
+                                }
+                            }
+                            catch {
+                                # The service may still be starting.
+                            }
+                        }
+                    
+                        Write-Host "Waiting for Windows application to recover..."
+                        Start-Sleep -Seconds 3
+                    }
+                    
+                    $finalService = Get-Service `
+                        -Name $serviceId `
+                        -ErrorAction SilentlyContinue
+                    
+                    Write-Host "Final service status: $($finalService.Status)"
+                    
+                    throw "Windows application did not recover within $timeoutSeconds seconds."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "PowerShell"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "restart-kubernetes-application" {
+        name = "Restart Kubernetes application"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-kubernetes"
+        }
+
+        action {
+            action_type = "Octopus.KubernetesRunScript"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    confirmation="$(get_octopusvariable "Runbook.Restart.Confirmation")"
+                    reason="$(get_octopusvariable "Runbook.Restart.Reason")"
+                    namespace="$(get_octopusvariable "Library.DurableMoney.Kubernetes.Namespace")"
+                    deployment="$(get_octopusvariable "Project.Kubernetes.DeploymentName")"
+                    timeout_seconds="$(get_octopusvariable "Runbook.Restart.TimeoutSeconds")"
+                    environment_name="$(get_octopusvariable "Octopus.Environment.Name")"
+                    
+                    if [[ "$confirmation" != "RESTART" ]]; then
+                      echo "Restart confirmation was not RESTART."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$reason" ]]; then
+                      echo "A restart reason is required."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$namespace" ]]; then
+                      echo "Kubernetes namespace is empty."
+                      exit 1
+                    fi
+                    
+                    if [[ -z "$deployment" ]]; then
+                      echo "Kubernetes deployment name is empty."
+                      exit 1
+                    fi
+                    
+                    echo "Environment: ${environment_name}"
+                    echo "Namespace: ${namespace}"
+                    echo "Deployment: ${deployment}"
+                    echo "Reason: ${reason}"
+                    
+                    previous_revision="$(
+                      kubectl \
+                        --namespace "$namespace" \
+                        get deployment "$deployment" \
+                        -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}'
+                    )"
+                    
+                    echo "Previous revision: ${previous_revision:-unknown}"
+                    echo "Restarting Kubernetes deployment..."
+                    
+                    kubectl \
+                      --namespace "$namespace" \
+                      rollout restart \
+                      "deployment/${deployment}"
+                    
+                    kubectl \
+                      --namespace "$namespace" \
+                      rollout status \
+                      "deployment/${deployment}" \
+                      --timeout="${timeout_seconds}s"
+                    
+                    desired="$(
+                      kubectl \
+                        --namespace "$namespace" \
+                        get deployment "$deployment" \
+                        -o jsonpath='{.spec.replicas}'
+                    )"
+                    
+                    ready="$(
+                      kubectl \
+                        --namespace "$namespace" \
+                        get deployment "$deployment" \
+                        -o jsonpath='{.status.readyReplicas}'
+                    )"
+                    
+                    available="$(
+                      kubectl \
+                        --namespace "$namespace" \
+                        get deployment "$deployment" \
+                        -o jsonpath='{.status.availableReplicas}'
+                    )"
+                    
+                    new_revision="$(
+                      kubectl \
+                        --namespace "$namespace" \
+                        get deployment "$deployment" \
+                        -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}'
+                    )"
+                    
+                    image="$(
+                      kubectl \
+                        --namespace "$namespace" \
+                        get deployment "$deployment" \
+                        -o jsonpath='{.spec.template.spec.containers[0].image}'
+                    )"
+                    
+                    ready="${ready:-0}"
+                    available="${available:-0}"
+                    
+                    echo "New revision: ${new_revision:-unknown}"
+                    echo "Desired replicas: ${desired}"
+                    echo "Ready replicas: ${ready}"
+                    echo "Available replicas: ${available}"
+                    echo "Image: ${image}"
+                    
+                    if [[ "$ready" != "$desired" ]]; then
+                      echo "Ready replicas do not match desired replicas."
+                      kubectl --namespace "$namespace" get pods -o wide
+                      exit 1
+                    fi
+                    
+                    if [[ "$available" != "$desired" ]]; then
+                      echo "Available replicas do not match desired replicas."
+                      kubectl --namespace "$namespace" get pods -o wide
+                      exit 1
+                    fi
+                    
+                    if [[ "$new_revision" == "$previous_revision" ]]; then
+                      echo "The Kubernetes revision did not change."
+                      exit 1
+                    fi
+                    
+                    echo "Kubernetes application restarted successfully."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool = "hosted-windows"
+            worker_pool_variable = ""
+        }
+    }
+}
