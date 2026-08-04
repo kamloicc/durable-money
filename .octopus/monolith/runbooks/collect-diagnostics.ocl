@@ -288,8 +288,9 @@ process {
                     
                     function Add-Text {
                         param(
-                            [Parameter(Mandatory = $true)]
-                            [string]$Text
+                            [Parameter(Mandatory = $false)]
+                            [AllowEmptyString()]
+                            [string]$Text = ""
                         )
                     
                         Add-Content `
