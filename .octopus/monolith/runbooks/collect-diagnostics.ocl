@@ -1,0 +1,864 @@
+name = "Collect Diagnostics"
+cancel_queued_tasks = true
+cancel_running_tasks = true
+default_guided_failure_mode = "EnvironmentDefault"
+description = "Collects read-only Linux, Windows, and Kubernetes diagnostics and uploads sanitized reports as Octopus artifacts."
+environment_scope = "Specified"
+environments = ["development", "staging"]
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+}
+
+run_retention_policy {
+    quantity_to_keep = 20
+    type = "Count"
+}
+
+process {
+    step "collect-linux-diagnostics" {
+        condition = "Always"
+        name = "Collect Linux diagnostics"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-linux"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -uo pipefail
+                    
+                    service_name="$(
+                      get_octopusvariable "Project.Linux.ServiceName"
+                    )"
+                    
+                    reason="$(
+                      get_octopusvariable "Runbook.Diagnostics.Reason"
+                    )"
+                    
+                    lookback_minutes="$(
+                      get_octopusvariable "Runbook.Diagnostics.LookbackMinutes"
+                    )"
+                    
+                    log_lines="$(
+                      get_octopusvariable "Runbook.Diagnostics.LogLines"
+                    )"
+                    
+                    machine_name="$(
+                      get_octopusvariable "Octopus.Machine.Name"
+                    )"
+                    
+                    environment_name="$(
+                      get_octopusvariable "Octopus.Environment.Name"
+                    )"
+                    
+                    lookback_minutes="${lookback_minutes:-120}"
+                    log_lines="${log_lines:-300}"
+                    
+                    if ! [[ "$lookback_minutes" =~ ^[0-9]+$ ]]; then
+                      lookback_minutes=120
+                    fi
+                    
+                    if ! [[ "$log_lines" =~ ^[0-9]+$ ]]; then
+                      log_lines=300
+                    fi
+                    
+                    safe_name() {
+                      printf '%s' "$1" |
+                        tr '[:upper:]' '[:lower:]' |
+                        tr -cs 'a-z0-9._-' '-'
+                    }
+                    
+                    safe_environment="$(safe_name "$environment_name")"
+                    safe_machine="$(safe_name "$machine_name")"
+                    timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+                    
+                    artifact_name="$(
+                      printf \
+                        'linux-diagnostics-%s-%s-%s.txt' \
+                        "$safe_environment" \
+                        "$safe_machine" \
+                        "$timestamp"
+                    )"
+                    
+                    artifact_path="${PWD}/${artifact_name}"
+                    
+                    section() {
+                      printf '\n============================================================\n'
+                      printf '%s\n' "$1"
+                      printf '============================================================\n'
+                    }
+                    
+                    {
+                      section "COLLECTION METADATA"
+                    
+                      echo "Collected at UTC: $(date -u --iso-8601=seconds)"
+                      echo "Environment: ${environment_name}"
+                      echo "Target: ${machine_name}"
+                      echo "Service: ${service_name:-not configured}"
+                      echo "Reason: ${reason}"
+                      echo "Log lookback: ${lookback_minutes} minutes"
+                      echo "Maximum journal lines: ${log_lines}"
+                    
+                      section "OPERATING SYSTEM"
+                    
+                      uname -a || true
+                    
+                      if [[ -f /etc/os-release ]]; then
+                        cat /etc/os-release || true
+                      fi
+                    
+                      section "UPTIME AND LOAD"
+                    
+                      uptime || true
+                    
+                      section "MEMORY"
+                    
+                      free -h || true
+                    
+                      section "FILESYSTEMS"
+                    
+                      df -hT || true
+                    
+                      section "TOP PROCESSES BY CPU"
+                    
+                      ps \
+                        -eo pid,ppid,user,%cpu,%mem,etime,comm,args \
+                        --sort=-%cpu |
+                        head -n 40 ||
+                      true
+                    
+                      section "LISTENING TCP PORTS"
+                    
+                      ss -lntp || true
+                    
+                      section "FAILED SYSTEMD UNITS"
+                    
+                      systemctl \
+                        --failed \
+                        --no-pager ||
+                      true
+                    
+                      section "APPLICATION SERVICE STATUS"
+                    
+                      if [[ -n "$service_name" ]]; then
+                        systemctl \
+                          status "$service_name" \
+                          --no-pager \
+                          --full ||
+                        true
+                      else
+                        echo "Project.Linux.ServiceName is not configured."
+                      fi
+                    
+                      section "APPLICATION SERVICE PROPERTIES"
+                    
+                      if [[ -n "$service_name" ]]; then
+                        systemctl \
+                          show "$service_name" \
+                          --no-pager \
+                          --property=Id \
+                          --property=Description \
+                          --property=LoadState \
+                          --property=ActiveState \
+                          --property=SubState \
+                          --property=MainPID \
+                          --property=ExecMainStatus \
+                          --property=Restart \
+                          --property=NRestarts \
+                          --property=MemoryCurrent \
+                          --property=CPUUsageNSec ||
+                        true
+                      fi
+                    
+                      section "RECENT APPLICATION JOURNAL"
+                    
+                      if [[ -n "$service_name" ]]; then
+                        journalctl \
+                          --unit "$service_name" \
+                          --since "-${lookback_minutes} minutes" \
+                          --lines "$log_lines" \
+                          --no-pager \
+                          --output=short-iso ||
+                        true
+                      else
+                        echo "Application journal was not collected because the service name is empty."
+                      fi
+                    
+                      section "RECENT SYSTEM ERRORS"
+                    
+                      journalctl \
+                        --priority=err \
+                        --since "-${lookback_minutes} minutes" \
+                        --lines 100 \
+                        --no-pager \
+                        --output=short-iso ||
+                      true
+                    
+                      section "END OF REPORT"
+                    } >"$artifact_path" 2>&1
+                    
+                    redacted_path="${artifact_path}.redacted"
+                    
+                    sed \
+                      -E \
+                      -e 's/((password|passwd|pwd|token|secret|authorization)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+                      -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/Ig' \
+                      "$artifact_path" \
+                      >"$redacted_path"
+                    
+                    mv "$redacted_path" "$artifact_path"
+                    
+                    echo "Created Linux diagnostic report: ${artifact_name}"
+                    
+                    new_octopusartifact \
+                      "$artifact_path" \
+                      "$artifact_name"
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "collect-windows-diagnostics" {
+        condition = "Always"
+        name = "Collect Windows diagnostics"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-windows"
+        }
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.RunOnServer = "false"
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    $ErrorActionPreference = "Stop"
+                    
+                    $serviceId = $OctopusParameters["Project.Windows.ServiceId"]
+                    $reason = $OctopusParameters["Runbook.Diagnostics.Reason"]
+                    $lookbackValue = $OctopusParameters["Runbook.Diagnostics.LookbackMinutes"]
+                    $logLinesValue = $OctopusParameters["Runbook.Diagnostics.LogLines"]
+                    $machineName = $OctopusParameters["Octopus.Machine.Name"]
+                    $environmentName = $OctopusParameters["Octopus.Environment.Name"]
+                    
+                    $lookbackMinutes = 120
+                    $logLines = 300
+                    
+                    if (-not [string]::IsNullOrWhiteSpace($lookbackValue)) {
+                        $lookbackMinutes = [int]$lookbackValue
+                    }
+                    
+                    if (-not [string]::IsNullOrWhiteSpace($logLinesValue)) {
+                        $logLines = [int]$logLinesValue
+                    }
+                    
+                    $maximumEvents = [Math]::Min($logLines, 500)
+                    $startTime = (Get-Date).AddMinutes(-$lookbackMinutes)
+                    
+                    function Convert-ToSafeName {
+                        param(
+                            [Parameter(Mandatory = $true)]
+                            [string]$Value
+                        )
+                    
+                        $safeValue = $Value `
+                            -replace '[^A-Za-z0-9._-]', '-'
+                    
+                        return $safeValue.Trim('-').ToLowerInvariant()
+                    }
+                    
+                    $safeEnvironment = Convert-ToSafeName $environmentName
+                    $safeMachine = Convert-ToSafeName $machineName
+                    $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+                    
+                    $artifactName = (
+                        "windows-diagnostics-{0}-{1}-{2}.txt" -f
+                        $safeEnvironment,
+                        $safeMachine,
+                        $timestamp
+                    )
+                    
+                    $artifactPath = Join-Path `
+                        $PWD `
+                        $artifactName
+                    
+                    function Add-Text {
+                        param(
+                            [Parameter(Mandatory = $false)]
+                            [AllowEmptyString()]
+                            [string]$Text = ""
+                        )
+                    
+                        Add-Content `
+                            -LiteralPath $artifactPath `
+                            -Value $Text `
+                            -Encoding UTF8
+                    }
+                    
+                    function Add-Section {
+                        param(
+                            [Parameter(Mandatory = $true)]
+                            [string]$Title,
+                    
+                            [Parameter(Mandatory = $true)]
+                            [scriptblock]$Command
+                        )
+                    
+                        Add-Text ""
+                        Add-Text "============================================================"
+                        Add-Text $Title
+                        Add-Text "============================================================"
+                    
+                        try {
+                            $result = & $Command
+                    
+                            if ($null -eq $result) {
+                                Add-Text "[No output]"
+                            }
+                            else {
+                                $formatted = $result |
+                                    Out-String `
+                                        -Width 240
+                    
+                                Add-Text $formatted.TrimEnd()
+                            }
+                        }
+                        catch {
+                            Add-Text (
+                                "[Collection failed: {0}]" -f
+                                $_.Exception.Message
+                            )
+                        }
+                    }
+                    
+                    Set-Content `
+                        -LiteralPath $artifactPath `
+                        -Value "" `
+                        -Encoding UTF8
+                    
+                    Add-Section "COLLECTION METADATA" {
+                        [PSCustomObject]@{
+                            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+                            Environment = $environmentName
+                            Target = $machineName
+                            ServiceId = $serviceId
+                            Reason = $reason
+                            LookbackMinutes = $lookbackMinutes
+                            MaximumEvents = $maximumEvents
+                        } |
+                            Format-List
+                    }
+                    
+                    Add-Section "OPERATING SYSTEM" {
+                        Get-CimInstance `
+                            -ClassName Win32_OperatingSystem |
+                            Select-Object `
+                                Caption,
+                                Version,
+                                BuildNumber,
+                                LastBootUpTime,
+                                LocalDateTime,
+                                FreePhysicalMemory,
+                                TotalVisibleMemorySize |
+                            Format-List
+                    }
+                    
+                    Add-Section "COMPUTER SYSTEM" {
+                        Get-CimInstance `
+                            -ClassName Win32_ComputerSystem |
+                            Select-Object `
+                                Name,
+                                Domain,
+                                Manufacturer,
+                                Model,
+                                NumberOfLogicalProcessors,
+                                TotalPhysicalMemory |
+                            Format-List
+                    }
+                    
+                    Add-Section "FILESYSTEMS" {
+                        Get-CimInstance `
+                            -ClassName Win32_LogicalDisk `
+                            -Filter "DriveType=3" |
+                            Select-Object `
+                                DeviceID,
+                                VolumeName,
+                                FileSystem,
+                                Size,
+                                FreeSpace |
+                            Format-Table `
+                                -AutoSize
+                    }
+                    
+                    Add-Section "APPLICATION SERVICE" {
+                        if ([string]::IsNullOrWhiteSpace($serviceId)) {
+                            throw "Project.Windows.ServiceId is empty."
+                        }
+                    
+                        Get-Service `
+                            -Name $serviceId `
+                            -ErrorAction Stop |
+                            Format-List `
+                                Name,
+                                DisplayName,
+                                Status,
+                                StartType
+                    }
+                    
+                    $serviceInfo = $null
+                    
+                    Add-Section "APPLICATION SERVICE DETAILS" {
+                        if ([string]::IsNullOrWhiteSpace($serviceId)) {
+                            throw "Project.Windows.ServiceId is empty."
+                        }
+                    
+                        $escapedServiceId = $serviceId.Replace("'", "''")
+                    
+                        $script:serviceInfo = Get-CimInstance `
+                            -ClassName Win32_Service `
+                            -Filter "Name='$escapedServiceId'" `
+                            -ErrorAction Stop
+                    
+                        $script:serviceInfo |
+                            Select-Object `
+                                Name,
+                                DisplayName,
+                                State,
+                                StartMode,
+                                ProcessId,
+                                ExitCode,
+                                ServiceSpecificExitCode,
+                                PathName,
+                                StartName |
+                            Format-List
+                    }
+                    
+                    Add-Section "APPLICATION PROCESS" {
+                        if (
+                            $null -eq $serviceInfo -or
+                            $serviceInfo.ProcessId -le 0
+                        ) {
+                            throw "The application service does not currently have a process."
+                        }
+                    
+                        Get-Process `
+                            -Id $serviceInfo.ProcessId `
+                            -ErrorAction Stop |
+                            Select-Object `
+                                Id,
+                                ProcessName,
+                                StartTime,
+                                CPU,
+                                WorkingSet64,
+                                PrivateMemorySize64,
+                                VirtualMemorySize64,
+                                HandleCount,
+                                ThreadCount |
+                            Format-List
+                    }
+                    
+                    Add-Section "APPLICATION LISTENING PORTS" {
+                        if (
+                            $null -eq $serviceInfo -or
+                            $serviceInfo.ProcessId -le 0
+                        ) {
+                            throw "The application service does not currently have a process."
+                        }
+                    
+                        Get-NetTCPConnection `
+                            -OwningProcess $serviceInfo.ProcessId `
+                            -ErrorAction Stop |
+                            Sort-Object `
+                                LocalPort |
+                            Select-Object `
+                                LocalAddress,
+                                LocalPort,
+                                RemoteAddress,
+                                RemotePort,
+                                State,
+                                OwningProcess |
+                            Format-Table `
+                                -AutoSize
+                    }
+                    
+                    Add-Section "TOP PROCESSES BY CPU" {
+                        Get-Process |
+                            Sort-Object `
+                                CPU `
+                                -Descending |
+                            Select-Object `
+                                -First 30 `
+                                Id,
+                                ProcessName,
+                                CPU,
+                                WorkingSet64,
+                                PrivateMemorySize64 |
+                            Format-Table `
+                                -AutoSize
+                    }
+                    
+                    Add-Section "RECENT SERVICE CONTROL MANAGER EVENTS" {
+                        Get-WinEvent `
+                            -FilterHashtable @{
+                                LogName = "System"
+                                ProviderName = "Service Control Manager"
+                                StartTime = $startTime
+                            } `
+                            -MaxEvents $maximumEvents `
+                            -ErrorAction Stop |
+                            Select-Object `
+                                TimeCreated,
+                                Id,
+                                LevelDisplayName,
+                                ProviderName,
+                                Message |
+                            Format-List
+                    }
+                    
+                    Add-Section "RECENT APPLICATION ERRORS AND WARNINGS" {
+                        Get-WinEvent `
+                            -FilterHashtable @{
+                                LogName = "Application"
+                                StartTime = $startTime
+                                Level = 1, 2, 3
+                            } `
+                            -MaxEvents $maximumEvents `
+                            -ErrorAction Stop |
+                            Select-Object `
+                                TimeCreated,
+                                Id,
+                                LevelDisplayName,
+                                ProviderName,
+                                Message |
+                            Format-List
+                    }
+                    
+                    Add-Section "END OF REPORT" {
+                        "Diagnostic collection completed."
+                    }
+                    
+                    $content = Get-Content `
+                        -LiteralPath $artifactPath `
+                        -Raw
+                    
+                    $content = $content -replace (
+                        '(?i)((password|passwd|pwd|token|secret|authorization)' +
+                        '\s*[:=]\s*)\S+'
+                    ), '$1[REDACTED]'
+                    
+                    $content = $content -replace (
+                        '(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+'
+                    ), '$1[REDACTED]'
+                    
+                    Set-Content `
+                        -LiteralPath $artifactPath `
+                        -Value $content `
+                        -Encoding UTF8
+                    
+                    Write-Host "Created Windows diagnostic report: $artifactName"
+                    
+                    New-OctopusArtifact `
+                        -Path $artifactPath `
+                        -Name $artifactName
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "PowerShell"
+            }
+            worker_pool_variable = ""
+        }
+    }
+
+    step "collect-kubernetes-diagnostics" {
+        condition = "Always"
+        name = "Collect Kubernetes diagnostics"
+        properties = {
+            Octopus.Action.TargetRoles = "durable-money-kubernetes"
+        }
+
+        action {
+            action_type = "Octopus.KubernetesRunScript"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -uo pipefail
+                    
+                    namespace="$(
+                      get_octopusvariable \
+                        "Library.DurableMoney.Kubernetes.Namespace"
+                    )"
+                    
+                    deployment="$(
+                      get_octopusvariable \
+                        "Project.Kubernetes.DeploymentName"
+                    )"
+                    
+                    reason="$(
+                      get_octopusvariable \
+                        "Runbook.Diagnostics.Reason"
+                    )"
+                    
+                    lookback_minutes="$(
+                      get_octopusvariable \
+                        "Runbook.Diagnostics.LookbackMinutes"
+                    )"
+                    
+                    log_lines="$(
+                      get_octopusvariable \
+                        "Runbook.Diagnostics.LogLines"
+                    )"
+                    
+                    environment_name="$(
+                      get_octopusvariable \
+                        "Octopus.Environment.Name"
+                    )"
+                    
+                    lookback_minutes="${lookback_minutes:-120}"
+                    log_lines="${log_lines:-300}"
+                    
+                    if ! [[ "$lookback_minutes" =~ ^[0-9]+$ ]]; then
+                      lookback_minutes=120
+                    fi
+                    
+                    if ! [[ "$log_lines" =~ ^[0-9]+$ ]]; then
+                      log_lines=300
+                    fi
+                    
+                    safe_name() {
+                      printf '%s' "$1" |
+                        tr '[:upper:]' '[:lower:]' |
+                        tr -cs 'a-z0-9._-' '-'
+                    }
+                    
+                    safe_environment="$(safe_name "$environment_name")"
+                    timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+                    
+                    artifact_name="$(
+                      printf \
+                        'kubernetes-diagnostics-%s-%s.tar.gz' \
+                        "$safe_environment" \
+                        "$timestamp"
+                    )"
+                    
+                    artifact_path="${PWD}/${artifact_name}"
+                    
+                    diagnostic_directory="$(
+                      mktemp \
+                        -d \
+                        "${PWD}/kubernetes-diagnostics.XXXXXX"
+                    )"
+                    
+                    capture() {
+                      local output_file="$1"
+                      shift
+                    
+                      {
+                        printf '$'
+                    
+                        printf \
+                          ' %q' \
+                          "$@"
+                    
+                        printf '\n\n'
+                    
+                        "$@"
+                    
+                        command_status=$?
+                    
+                        printf \
+                          '\n[Command exit code: %s]\n' \
+                          "$command_status"
+                    
+                        return "$command_status"
+                      } >"${diagnostic_directory}/${output_file}" 2>&1 ||
+                      true
+                    }
+                    
+                    {
+                      echo "Collected at UTC: $(date -u --iso-8601=seconds)"
+                      echo "Environment: ${environment_name}"
+                      echo "Namespace: ${namespace}"
+                      echo "Deployment: ${deployment}"
+                      echo "Reason: ${reason}"
+                      echo "Log lookback: ${lookback_minutes} minutes"
+                      echo "Maximum log lines per pod: ${log_lines}"
+                    } >"${diagnostic_directory}/metadata.txt"
+                    
+                    if [[ -z "$namespace" ]]; then
+                      echo "Kubernetes namespace is empty."
+                      echo "Collection cannot continue." \
+                        >>"${diagnostic_directory}/metadata.txt"
+                    else
+                      capture \
+                        "namespace.txt" \
+                        kubectl \
+                          get namespace "$namespace" \
+                          -o wide
+                    
+                      capture \
+                        "pods.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          get pods \
+                          -o wide \
+                          --show-labels
+                    
+                      capture \
+                        "replicasets.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          get replicasets \
+                          -o wide
+                    
+                      capture \
+                        "services.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          get services \
+                          -o wide
+                    
+                      capture \
+                        "endpoints.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          get endpoints \
+                          -o wide
+                    
+                      capture \
+                        "resourcequotas.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          describe resourcequota
+                    
+                      capture \
+                        "limitranges.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          describe limitrange
+                    
+                      capture \
+                        "events.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          get events \
+                          --sort-by=.metadata.creationTimestamp
+                    
+                      capture \
+                        "resource-usage.txt" \
+                        kubectl \
+                          --namespace "$namespace" \
+                          top pods \
+                          --containers
+                    
+                      if [[ -n "$deployment" ]]; then
+                        capture \
+                          "deployment.txt" \
+                          kubectl \
+                            --namespace "$namespace" \
+                            get deployment "$deployment" \
+                            -o wide
+                    
+                        capture \
+                          "deployment-describe.txt" \
+                          kubectl \
+                            --namespace "$namespace" \
+                            describe deployment "$deployment"
+                    
+                        capture \
+                          "deployment-rollout.txt" \
+                          kubectl \
+                            --namespace "$namespace" \
+                            rollout status \
+                            "deployment/${deployment}" \
+                            --timeout=30s
+                      else
+                        echo "Project.Kubernetes.DeploymentName is empty." \
+                          >>"${diagnostic_directory}/metadata.txt"
+                      fi
+                    
+                      while IFS= read -r pod_resource; do
+                        if [[ -z "$pod_resource" ]]; then
+                          continue
+                        fi
+                    
+                        pod_name="${pod_resource#pod/}"
+                        safe_pod_name="$(safe_name "$pod_name")"
+                    
+                        capture \
+                          "pod-${safe_pod_name}-describe.txt" \
+                          kubectl \
+                            --namespace "$namespace" \
+                            describe pod "$pod_name"
+                    
+                        capture \
+                          "pod-${safe_pod_name}-logs.txt" \
+                          kubectl \
+                            --namespace "$namespace" \
+                            logs "$pod_name" \
+                            --all-containers=true \
+                            --prefix=true \
+                            --since="${lookback_minutes}m" \
+                            --tail="$log_lines"
+                    
+                        capture \
+                          "pod-${safe_pod_name}-previous-logs.txt" \
+                          kubectl \
+                            --namespace "$namespace" \
+                            logs "$pod_name" \
+                            --all-containers=true \
+                            --prefix=true \
+                            --previous \
+                            --since="${lookback_minutes}m" \
+                            --tail="$log_lines"
+                      done < <(
+                        kubectl \
+                          --namespace "$namespace" \
+                          get pods \
+                          -o name \
+                          2>/dev/null ||
+                        true
+                      )
+                    fi
+                    
+                    while IFS= read -r -d '' diagnostic_file; do
+                      redacted_file="${diagnostic_file}.redacted"
+                    
+                      sed \
+                        -E \
+                        -e 's/((password|passwd|pwd|token|secret|authorization)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+                        -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/Ig' \
+                        "$diagnostic_file" \
+                        >"$redacted_file"
+                    
+                      mv \
+                        "$redacted_file" \
+                        "$diagnostic_file"
+                    done < <(
+                      find \
+                        "$diagnostic_directory" \
+                        -type f \
+                        -name '*.txt' \
+                        -print0
+                    )
+                    
+                    tar \
+                      -C "$diagnostic_directory" \
+                      -czf "$artifact_path" \
+                      .
+                    
+                    echo "Created Kubernetes diagnostic archive: ${artifact_name}"
+                    
+                    new_octopusartifact \
+                      "$artifact_path" \
+                      "$artifact_name"
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool = "hosted-windows"
+            worker_pool_variable = ""
+        }
+    }
+}
