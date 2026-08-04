@@ -3,13 +3,16 @@ cancel_queued_tasks = true
 cancel_running_tasks = true
 default_guided_failure_mode = "EnvironmentDefault"
 description = "Collects read-only Linux, Windows, and Kubernetes diagnostics and uploads sanitized reports as Octopus artifacts."
+environment_scope = "Specified"
+environments = ["development", "staging"]
 
 connectivity_policy {
     allow_deployments_to_no_targets = true
 }
 
 run_retention_policy {
-    type = "Default"
+    quantity_to_keep = 20
+    type = "Count"
 }
 
 process {}
