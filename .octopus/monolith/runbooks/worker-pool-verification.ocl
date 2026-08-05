@@ -1,0 +1,18 @@
+name = "Worker Pool Verification"
+cancel_queued_tasks = true
+cancel_running_tasks = true
+default_guided_failure_mode = "EnvironmentDefault"
+description = <<-EOT
+        Verifies Linux and Windows worker-pool execution and records
+        the operating system and installed baseline tools.
+        EOT
+
+connectivity_policy {
+    allow_deployments_to_no_targets = true
+}
+
+run_retention_policy {
+    type = "Default"
+}
+
+process {}
