@@ -17,4 +17,206 @@ run_retention_policy {
     type = "Default"
 }
 
-process {}
+process {
+    step "verify-linux-dynamic-worker" {
+        name = "Verify Linux dynamic worker"
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    set -euo pipefail
+                    
+                    worker_pool="$(
+                      get_octopusvariable "Octopus.WorkerPool.Name"
+                    )"
+                    
+                    environment="$(
+                      get_octopusvariable "Octopus.Environment.Name"
+                    )"
+                    
+                    echo "============================================================"
+                    echo "LINUX WORKER VERIFICATION"
+                    echo "============================================================"
+                    echo "Environment: ${environment}"
+                    echo "Worker pool: ${worker_pool}"
+                    echo "Hostname: $(hostname)"
+                    echo "Current user: $(id -un)"
+                    echo "Working directory: ${PWD}"
+                    echo "UTC time: $(date -u --iso-8601=seconds)"
+                    
+                    echo
+                    echo "Operating system:"
+                    if [[ -f /etc/os-release ]]; then
+                      cat /etc/os-release
+                    else
+                      uname -a
+                    fi
+                    
+                    echo
+                    echo "Kernel:"
+                    uname -a
+                    
+                    echo
+                    echo "CPU:"
+                    nproc
+                    
+                    echo
+                    echo "Memory:"
+                    free -h || true
+                    
+                    echo
+                    echo "Disk:"
+                    df -h /
+                    
+                    echo
+                    echo "Available tools:"
+                    
+                    if command -v docker >/dev/null 2>&1; then
+                      docker --version
+                    else
+                      echo "Docker: not found"
+                    fi
+                    
+                    if command -v pwsh >/dev/null 2>&1; then
+                      pwsh --version
+                    else
+                      echo "PowerShell: not found"
+                    fi
+                    
+                    if command -v python3 >/dev/null 2>&1; then
+                      python3 --version
+                    else
+                      echo "Python 3: not found"
+                    fi
+                    
+                    if command -v git >/dev/null 2>&1; then
+                      git --version
+                    else
+                      echo "Git: not found"
+                    fi
+                    
+                    echo
+                    echo "Linux dynamic worker verification succeeded."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "Bash"
+            }
+            worker_pool = "durable-money-dynamic-linux"
+        }
+    }
+
+    step "verify-windows-dynamic-worker" {
+        name = "Verify Windows dynamic worker"
+
+        action {
+            action_type = "Octopus.Script"
+            properties = {
+                Octopus.Action.Script.ScriptBody = <<-EOT
+                    $ErrorActionPreference = "Stop"
+                    
+                    $workerPool = $OctopusParameters["Octopus.WorkerPool.Name"]
+                    $environmentName = $OctopusParameters["Octopus.Environment.Name"]
+                    
+                    Write-Host "============================================================"
+                    Write-Host "WINDOWS WORKER VERIFICATION"
+                    Write-Host "============================================================"
+                    Write-Host "Environment: $environmentName"
+                    Write-Host "Worker pool: $workerPool"
+                    Write-Host "Hostname: $env:COMPUTERNAME"
+                    Write-Host "Current user: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+                    Write-Host "Working directory: $PWD"
+                    Write-Host "UTC time: $((Get-Date).ToUniversalTime().ToString('o'))"
+                    
+                    Write-Host ""
+                    Write-Host "Operating system:"
+                    
+                    Get-CimInstance `
+                        -ClassName Win32_OperatingSystem |
+                        Select-Object `
+                            Caption,
+                            Version,
+                            BuildNumber,
+                            OSArchitecture,
+                            LastBootUpTime |
+                        Format-List
+                    
+                    Write-Host "Computer system:"
+                    
+                    Get-CimInstance `
+                        -ClassName Win32_ComputerSystem |
+                        Select-Object `
+                            Name,
+                            Manufacturer,
+                            Model,
+                            NumberOfLogicalProcessors,
+                            TotalPhysicalMemory |
+                        Format-List
+                    
+                    Write-Host "Disk:"
+                    
+                    Get-CimInstance `
+                        -ClassName Win32_LogicalDisk `
+                        -Filter "DriveType=3" |
+                        Select-Object `
+                            DeviceID,
+                            FileSystem,
+                            Size,
+                            FreeSpace |
+                        Format-Table `
+                            -AutoSize
+                    
+                    Write-Host "Available tools:"
+                    
+                    $commands = @(
+                        @{
+                            Name = "PowerShell"
+                            Command = "pwsh"
+                            Arguments = @("--version")
+                        },
+                        @{
+                            Name = "Docker"
+                            Command = "docker"
+                            Arguments = @("--version")
+                        },
+                        @{
+                            Name = "Python"
+                            Command = "python"
+                            Arguments = @("--version")
+                        },
+                        @{
+                            Name = "Git"
+                            Command = "git"
+                            Arguments = @("--version")
+                        }
+                    )
+                    
+                    foreach ($item in $commands) {
+                        $command = Get-Command `
+                            -Name $item.Command `
+                            -ErrorAction SilentlyContinue
+                    
+                        if ($null -eq $command) {
+                            Write-Host "$($item.Name): not found"
+                            continue
+                        }
+                    
+                        Write-Host "$($item.Name):"
+                    
+                        & $item.Command @($item.Arguments)
+                    
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "$($item.Command) returned exit code $LASTEXITCODE."
+                        }
+                    }
+                    
+                    Write-Host ""
+                    Write-Host "Windows dynamic worker verification succeeded."
+                    EOT
+                Octopus.Action.Script.ScriptSource = "Inline"
+                Octopus.Action.Script.Syntax = "PowerShell"
+            }
+            worker_pool = "durable-money-dynamic-windows"
+        }
+    }
+}
