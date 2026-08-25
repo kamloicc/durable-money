@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: transfer-staging
+  namespace: argocd
+
+  annotations:
+    argo.octopus.com/project: northfield-transfer-service
+    argo.octopus.com/environment: staging
+
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/kamloicc/durable-money.git
+    targetRevision: main
+    path: gitops/transfer-service/overlays/staging
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: durable-money-staging
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+    syncOptions:
+      - CreateNamespace=false

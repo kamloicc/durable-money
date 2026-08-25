@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: account-production
+  namespace: argocd
+
+  annotations:
+    argo.octopus.com/project: northfield-account-service
+    argo.octopus.com/environment: production
+
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/kamloicc/durable-money.git
+    targetRevision: main
+    path: gitops/account-service/overlays/production
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: durable-money-prod
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+
+    syncOptions:
+      - CreateNamespace=false
