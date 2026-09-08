@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: northfield-release-info
+data:
+  releaseVersion: "initial"
+  environment: "Development"
+  loggingEndpoint: "initial"
+  featureFlagsEndpoint: "initial"
