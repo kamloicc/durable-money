@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: northfield-release-info
+data:
+  releaseVersion: "0.3.4"
+  environment: "Production"
+  loggingEndpoint: "https://logs.northfield.demo"
+  featureFlagsEndpoint: "https://features.northfield.demo"
