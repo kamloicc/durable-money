@@ -5,6 +5,7 @@ namespace: durable-money-dev
 
 resources:
   - ../../base
+  - release-info.yaml
 
 images:
   - name: ghcr.io/kamloicc/durable-money-2-microservices-account-service
