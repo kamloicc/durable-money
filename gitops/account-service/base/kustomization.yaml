@@ -7,3 +7,7 @@ resources:
   - postgres.yaml
   - deployment.yaml
   - service.yaml
+  
+images:
+  - name: ghcr.io/kamloicc/durable-money-2-microservices-account-service
+    newTag: 0.3.1
