@@ -3,7 +3,7 @@ kind: ConfigMap
 metadata:
   name: northfield-release-info
 data:
-  releaseVersion: "initial"
+  releaseVersion: "0.3.4"
   environment: "Development"
-  loggingEndpoint: "initial"
-  featureFlagsEndpoint: "initial"
+  loggingEndpoint: "https://logs.northfield.demo"
+  featureFlagsEndpoint: "https://features.northfield.demo"
