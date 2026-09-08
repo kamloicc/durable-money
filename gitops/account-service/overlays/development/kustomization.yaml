@@ -7,5 +7,5 @@ resources:
   - ../../base
 
 images:
-  - name: kamloicc/durable-money-2-microservices-account-service
+  - name: ghcr.io/kamloicc/durable-money-2-microservices-account-service
     newTag: "0.3.1"
