@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: northfield-release-info
+data:
+  releaseVersion: "#{Octopus.Release.Number}"
+  environment: "#{Octopus.Environment.Name}"
+  loggingEndpoint: "#{Logging.Endpoint}"
+  featureFlagsEndpoint: "#{FeatureFlags.Endpoint}"
