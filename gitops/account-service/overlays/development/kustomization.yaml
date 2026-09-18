@@ -9,4 +9,4 @@ resources:
 
 images:
   - name: ghcr.io/kamloicc/durable-money-2-microservices-account-service
-    newTag: "0.3.5"
+    newTag: "0.3.1"
